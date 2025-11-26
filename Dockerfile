@@ -1,56 +1,37 @@
-# FinSight AI Backend - Dockerfile
-# =================================
-# Multi-stage build for production deployment
+# ============================================
+# FINSIGHT AI BACKEND - DOCKERFILE
+# ============================================
 
-# Build stage
-FROM python:3.11-slim as builder
+FROM python:3.11-slim
 
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Set work directory
 WORKDIR /app
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.txt
-
-
-# Production stage
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# Create non-root user for security
-RUN groupadd -r finsight && useradd -r -g finsight finsight
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy wheels and install
-COPY --from=builder /app/wheels /wheels
-RUN pip install --no-cache /wheels/*
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY ./app /app/app
-COPY ./alembic /app/alembic
-COPY ./alembic.ini /app/alembic.ini
+COPY . .
 
-# Change ownership
-RUN chown -R finsight:finsight /app
-
-# Switch to non-root user
+# Create non-root user for security
+RUN adduser --disabled-password --gecos '' finsight && \
+    chown -R finsight:finsight /app
 USER finsight
 
 # Expose port
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/health')" || exit 1
-
-# Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Railway provides PORT as environment variable
+# Use shell form to properly expand the variable
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
