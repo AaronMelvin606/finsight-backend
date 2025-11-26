@@ -1,0 +1,26 @@
+# FinSight AI Backend - Render Configuration
+# ==========================================
+# Deploy to Render: https://render.com
+
+services:
+  - type: web
+    name: finsight-api
+    env: python
+    region: frankfurt  # EU region for UK customers
+    plan: starter  # $7/month, or use free tier initially
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        sync: false  # Set manually in Render dashboard
+      - key: SECRET_KEY
+        generateValue: true
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: FRONTEND_URL
+        value: https://www.finsightai.tech
