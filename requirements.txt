@@ -1,13 +1,15 @@
-# FinSight AI Backend - Python Dependencies
-# ==========================================
+# ============================================
+# FINSIGHT AI BACKEND - REQUIREMENTS
+# ============================================
 
-# FastAPI Framework
+# Core Framework
 fastapi==0.109.2
 uvicorn[standard]==0.27.1
-python-multipart==0.0.9
+pydantic==2.6.1
+pydantic-settings==2.1.0
 
-# Database (PostgreSQL + SQLAlchemy)
-sqlalchemy[asyncio]==2.0.25
+# Database
+sqlalchemy==2.0.25
 asyncpg==0.29.0
 alembic==1.13.1
 
@@ -15,43 +17,29 @@ alembic==1.13.1
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 
-# Validation & Settings
-pydantic==2.6.1
-pydantic-settings==2.1.0
-email-validator==2.1.0.post1
-
-# Stripe Payments
+# Payments
 stripe==8.2.0
 
-# HTTP Client (for external APIs)
-httpx==0.26.0
-
-# Date/Time handling
-python-dateutil==2.8.2
-
-# Environment variables
-python-dotenv==1.0.1
-
-# Testing
-pytest==8.0.0
-pytest-asyncio==0.23.4
-pytest-cov==4.1.0
-httpx==0.26.0
-
-# Development tools
-black==24.1.1
-isort==5.13.2
-flake8==7.0.0
-mypy==1.8.0
-
-# OpenAI (for AI commentary)
+# AI (Optional - for variance commentary)
 openai==1.12.0
 
-# AWS S3 (for file storage - future)
-boto3==1.34.40
+# AWS S3 (Optional - for file uploads)
+boto3==1.34.34
 
-# Redis (for caching - future)
-# redis==5.0.1
+# Email
+aiosmtplib==3.0.1
 
-# Sentry (for error tracking - production)
-# sentry-sdk[fastapi]==1.40.0
+# HTTP Client
+httpx==0.26.0
+
+# Testing (compatible versions)
+pytest==7.4.4
+pytest-asyncio==0.21.1
+
+# Code Quality
+black==24.1.1
+isort==5.13.2
+mypy==1.8.0
+
+# Type stubs
+types-passlib==1.7.7.20240106
