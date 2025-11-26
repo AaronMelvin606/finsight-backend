@@ -1,13 +1,13 @@
-"""
-FinSight AI - Data Source Model
-===============================
-SQLAlchemy models for data sources (CSV uploads, ERP connections).
-"""
+# ============================================
+# FINSIGHT AI - DATA SOURCE MODELS
+# ============================================
 
-import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Text, JSON
-from sqlalchemy.dialects.postgresql import UUID
+from typing import Optional
+from sqlalchemy import (
+    Column, Integer, String, Text, DateTime, 
+    ForeignKey, Boolean, Numeric, Enum, JSON
+)
 from sqlalchemy.orm import relationship
 import enum
 
@@ -15,169 +15,124 @@ from app.core.database import Base
 
 
 class DataSourceType(str, enum.Enum):
-    """Types of data sources supported."""
+    """Supported data source types."""
     CSV = "csv"
     XERO = "xero"
     NETSUITE = "netsuite"
     QUICKBOOKS = "quickbooks"
     SAGE = "sage"
-    MANUAL = "manual"
+    API = "api"
 
 
 class ConnectionStatus(str, enum.Enum):
     """Data source connection status."""
-    CONNECTED = "connected"
-    DISCONNECTED = "disconnected"
-    ERROR = "error"
     PENDING = "pending"
-    SYNCING = "syncing"
+    CONNECTED = "connected"
+    ERROR = "error"
+    DISCONNECTED = "disconnected"
 
 
 class DataSource(Base):
     """
-    Data source model - represents a connection to financial data.
-    
-    Can be a CSV upload or an ERP integration (Xero, NetSuite, etc.)
+    Data source connections for each organisation.
+    Stores ERP/accounting system connection details.
     """
     __tablename__ = "data_sources"
+
+    id = Column(Integer, primary_key=True, index=True)
     
-    # Primary key
-    id = Column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-        index=True
-    )
-    
-    # Foreign key to organisation (multi-tenancy)
-    organisation_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("organisations.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True
-    )
+    # Relationship to organisation
+    organisation_id = Column(Integer, ForeignKey("organisations.id"), nullable=False)
     
     # Source details
-    name = Column(String(255), nullable=False)  # e.g., "Main Xero Account"
-    source_type = Column(String(50), nullable=False)  # csv, xero, netsuite, etc.
+    name = Column(String(255), nullable=False)
+    source_type = Column(Enum(DataSourceType), nullable=False)
+    description = Column(Text, nullable=True)
     
-    # Connection status
-    connection_status = Column(
-        String(50),
-        default=ConnectionStatus.PENDING.value,
-        nullable=False
-    )
+    # Connection details (encrypted in production)
+    connection_config = Column(JSON, nullable=True)  # Stores API keys, tokens, etc.
     
-    # OAuth credentials (encrypted in production)
-    credentials = Column(JSON, nullable=True)  # OAuth tokens, API keys
-    
-    # Sync configuration
-    sync_frequency = Column(String(50), default="daily")  # daily, weekly, manual
+    # Status tracking
+    status = Column(Enum(ConnectionStatus), default=ConnectionStatus.PENDING)
     last_sync_at = Column(DateTime, nullable=True)
-    last_sync_status = Column(String(50), nullable=True)
-    last_sync_error = Column(Text, nullable=True)
+    last_error = Column(Text, nullable=True)
     
-    # For CSV sources
-    file_path = Column(String(500), nullable=True)  # S3 path or similar
-    original_filename = Column(String(255), nullable=True)
+    # Record counts
+    records_synced = Column(Integer, default=0)
     
-    # Metadata
-    row_count = Column(String(50), nullable=True)  # Records imported
-    date_range_start = Column(DateTime, nullable=True)
-    date_range_end = Column(DateTime, nullable=True)
-    
-    # Status
+    # Audit fields
     is_active = Column(Boolean, default=True)
-    
-    # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
     organisation = relationship("Organisation", back_populates="data_sources")
-    financial_records = relationship(
-        "FinancialRecord",
-        back_populates="data_source",
-        cascade="all, delete-orphan"
-    )
-    
+    financial_records = relationship("FinancialRecord", back_populates="data_source", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<DataSource {self.name} ({self.source_type})>"
 
 
 class FinancialRecord(Base):
     """
-    Financial record model - stores actual financial data.
-    
-    Standardised schema for data from any source (CSV, Xero, NetSuite, etc.)
+    Standardised financial records from various data sources.
+    This is the unified schema for all financial data.
     """
     __tablename__ = "financial_records"
+
+    id = Column(Integer, primary_key=True, index=True)
     
-    # Primary key
-    id = Column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-        index=True
-    )
+    # Relationships
+    data_source_id = Column(Integer, ForeignKey("data_sources.id"), nullable=False)
+    organisation_id = Column(Integer, ForeignKey("organisations.id"), nullable=False)
     
-    # Foreign keys
-    organisation_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("organisations.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True
-    )
-    data_source_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("data_sources.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True
-    )
+    # Record identification
+    external_id = Column(String(255), nullable=True)  # ID from source system
+    record_type = Column(String(50), nullable=False)  # e.g., "journal", "invoice", "payment"
     
-    # Date dimension
-    record_date = Column(DateTime, nullable=False, index=True)
-    period_year = Column(String(4), nullable=True)  # e.g., "2025"
-    period_month = Column(String(2), nullable=True)  # e.g., "01"
-    period_quarter = Column(String(2), nullable=True)  # e.g., "Q1"
+    # Date fields
+    record_date = Column(DateTime, nullable=False)
+    period_year = Column(Integer, nullable=False)
+    period_month = Column(Integer, nullable=False)
     
-    # Account dimension
-    account_code = Column(String(100), nullable=True, index=True)
+    # Account structure
+    account_code = Column(String(50), nullable=False)
     account_name = Column(String(255), nullable=True)
-    account_category = Column(String(100), nullable=True)  # Revenue, COGS, OpEx, etc.
-    account_subcategory = Column(String(100), nullable=True)
+    account_category = Column(String(100), nullable=True)  # e.g., "Revenue", "COGS", "OpEx"
     
-    # Department/Cost Centre dimension
-    department_code = Column(String(100), nullable=True, index=True)
+    # Department/Cost Centre
+    department_code = Column(String(50), nullable=True)
     department_name = Column(String(255), nullable=True)
     
-    # Product dimension (optional)
-    product_code = Column(String(100), nullable=True)
-    product_name = Column(String(255), nullable=True)
-    
-    # Amounts
-    amount_actual = Column(String(50), nullable=True)  # Stored as string, parsed as needed
-    amount_budget = Column(String(50), nullable=True)
-    amount_forecast = Column(String(50), nullable=True)
-    amount_prior_year = Column(String(50), nullable=True)
+    # Financial amounts
+    amount_actual = Column(Numeric(15, 2), nullable=True)
+    amount_budget = Column(Numeric(15, 2), nullable=True)
+    amount_forecast = Column(Numeric(15, 2), nullable=True)
+    amount_prior_year = Column(Numeric(15, 2), nullable=True)
     
     # Currency
     currency = Column(String(3), default="GBP")
+    exchange_rate = Column(Numeric(10, 6), default=1.0)
     
-    # Record type
-    record_type = Column(String(50), default="actual")  # actual, budget, forecast
+    # Additional dimensions
+    project_code = Column(String(50), nullable=True)
+    customer_code = Column(String(50), nullable=True)
+    vendor_code = Column(String(50), nullable=True)
     
-    # Source reference
-    source_transaction_id = Column(String(255), nullable=True)  # Original ID from ERP
+    # Description and notes
+    description = Column(Text, nullable=True)
+    source_reference = Column(String(255), nullable=True)  # Original doc reference
     
-    # Flexible metadata
-    metadata = Column(JSON, nullable=True)
+    # Extra data from source (flexible JSON)
+    extra_data = Column(JSON, nullable=True)
     
-    # Timestamps
+    # Audit fields
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
     data_source = relationship("DataSource", back_populates="financial_records")
-    
+    organisation = relationship("Organisation", back_populates="financial_records")
+
     def __repr__(self):
-        return f"<FinancialRecord {self.account_code} {self.record_date}>"
+        return f"<FinancialRecord {self.account_code} {self.record_date} {self.amount_actual}>"
