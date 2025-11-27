@@ -1,11 +1,9 @@
-"""
-FinSight AI - Security & Authentication
-=======================================
-JWT token handling, password hashing, and authentication utilities.
-"""
+# ============================================
+# FINSIGHT AI - SECURITY & AUTHENTICATION
+# ============================================
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Union
+from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
@@ -15,7 +13,6 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.models.user import User
 
 
 # Password hashing context
@@ -39,16 +36,7 @@ def create_access_token(
     data: dict,
     expires_delta: Optional[timedelta] = None
 ) -> str:
-    """
-    Create a JWT access token.
-    
-    Args:
-        data: Payload data to encode in the token
-        expires_delta: Optional custom expiration time
-        
-    Returns:
-        Encoded JWT token string
-    """
+    """Create a JWT access token."""
     to_encode = data.copy()
     
     if expires_delta:
@@ -72,15 +60,7 @@ def create_access_token(
 
 
 def create_refresh_token(data: dict) -> str:
-    """
-    Create a JWT refresh token (longer lived).
-    
-    Args:
-        data: Payload data to encode in the token
-        
-    Returns:
-        Encoded JWT refresh token string
-    """
+    """Create a JWT refresh token (longer lived)."""
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(
         days=settings.REFRESH_TOKEN_EXPIRE_DAYS
@@ -100,18 +80,7 @@ def create_refresh_token(data: dict) -> str:
 
 
 def decode_token(token: str) -> dict:
-    """
-    Decode and validate a JWT token.
-    
-    Args:
-        token: JWT token string
-        
-    Returns:
-        Decoded payload dictionary
-        
-    Raises:
-        HTTPException: If token is invalid or expired
-    """
+    """Decode and validate a JWT token."""
     try:
         payload = jwt.decode(
             token,
@@ -130,19 +99,14 @@ def decode_token(token: str) -> dict:
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db)
-) -> User:
-    """
-    Dependency to get the current authenticated user.
+):
+    """Dependency to get the current authenticated user."""
+    # Import here to avoid circular imports
+    from app.models.user import User
     
-    Usage:
-        @router.get("/me")
-        async def get_me(current_user: User = Depends(get_current_user)):
-            return current_user
-    """
     token = credentials.credentials
     payload = decode_token(token)
     
-    # Verify it's an access token, not a refresh token
     if payload.get("type") != "access":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -158,8 +122,7 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # Fetch user from database
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(select(User).where(User.id == int(user_id)))
     user = result.scalar_one_or_none()
     
     if user is None:
@@ -179,8 +142,8 @@ async def get_current_user(
 
 
 async def get_current_active_user(
-    current_user: User = Depends(get_current_user)
-) -> User:
+    current_user = Depends(get_current_user)
+):
     """Dependency to ensure user is active."""
     if not current_user.is_active:
         raise HTTPException(
@@ -193,15 +156,7 @@ async def get_current_active_user(
 def require_subscription_tier(required_tier: str):
     """
     Dependency factory to require a minimum subscription tier.
-    
-    Tier hierarchy: essentials < professional < enterprise
-    
-    Usage:
-        @router.get("/pro-feature")
-        async def pro_feature(
-            user: User = Depends(require_subscription_tier("professional"))
-        ):
-            ...
+    Tier hierarchy: trial < essentials < professional < enterprise
     """
     tier_levels = {
         "trial": 0,
@@ -211,11 +166,10 @@ def require_subscription_tier(required_tier: str):
     }
     
     async def check_tier(
-        current_user: User = Depends(get_current_user),
+        current_user = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
-    ) -> User:
-        # Get user's organisation subscription tier
-        from app.models.organisation import OrganisationMember
+    ):
+        from app.models.organisation import OrganisationMember, Organisation
         
         result = await db.execute(
             select(OrganisationMember)
@@ -229,9 +183,6 @@ def require_subscription_tier(required_tier: str):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User is not a member of any organisation"
             )
-        
-        # Get organisation's subscription tier
-        from app.models.organisation import Organisation
         
         org_result = await db.execute(
             select(Organisation)
@@ -251,8 +202,7 @@ def require_subscription_tier(required_tier: str):
         if user_tier_level < required_tier_level:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"This feature requires {required_tier} subscription or higher. "
-                       f"Current tier: {organisation.subscription_tier}"
+                detail=f"This feature requires {required_tier} subscription or higher"
             )
         
         return current_user
