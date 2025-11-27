@@ -1,40 +1,52 @@
-"""
-FinSight AI - Database Connection
-=================================
-Async SQLAlchemy connection to Neon PostgreSQL.
-"""
+# ============================================
+# FINSIGHT AI - DATABASE CONFIGURATION
+# ============================================
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.pool import NullPool
+import ssl
 
 from app.core.config import settings
 
-
-# Convert postgres:// to postgresql+asyncpg:// for async driver
+# Convert postgres:// to postgresql+asyncpg:// and handle SSL
 database_url = settings.DATABASE_URL
+
+# Handle different URL formats
 if database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql+asyncpg://", 1)
 elif database_url.startswith("postgresql://"):
     database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# Add SSL requirement for Neon
-if "?" not in database_url:
-    database_url += "?ssl=require"
-elif "ssl=" not in database_url:
-    database_url += "&ssl=require"
+# Remove sslmode and channel_binding from URL (asyncpg handles SSL differently)
+# Parse out query parameters that asyncpg doesn't understand
+if "?" in database_url:
+    base_url, query_string = database_url.split("?", 1)
+    # Remove problematic parameters
+    params = query_string.split("&")
+    filtered_params = [p for p in params if not p.startswith(("sslmode=", "channel_binding="))]
+    if filtered_params:
+        database_url = base_url + "?" + "&".join(filtered_params)
+    else:
+        database_url = base_url
 
+# Create SSL context for Neon (requires SSL)
+ssl_context = ssl.create_default_context()
+ssl_context.check_hostname = False
+ssl_context.verify_mode = ssl.CERT_NONE
 
-# Create async engine
-# NullPool is recommended for serverless (Neon)
+# Create async engine with SSL
 engine = create_async_engine(
     database_url,
-    echo=settings.DEBUG,  # Log SQL queries in debug mode
-    poolclass=NullPool,  # Recommended for serverless PostgreSQL
+    poolclass=NullPool,  # Required for serverless environments
+    echo=settings.DEBUG,
+    connect_args={
+        "ssl": ssl_context,
+    },
 )
 
 # Create async session factory
-AsyncSessionLocal = async_sessionmaker(
+async_session = async_sessionmaker(
     engine,
     class_=AsyncSession,
     expire_on_commit=False,
@@ -42,23 +54,16 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False,
 )
 
-
-# Base class for all models
-class Base(DeclarativeBase):
-    """Base class for SQLAlchemy models."""
-    pass
+# Base class for models
+Base = declarative_base()
 
 
 async def get_db() -> AsyncSession:
     """
     Dependency that provides a database session.
-    
-    Usage in endpoints:
-        @router.get("/items")
-        async def get_items(db: AsyncSession = Depends(get_db)):
-            ...
+    Usage: db: AsyncSession = Depends(get_db)
     """
-    async with AsyncSessionLocal() as session:
+    async with async_session() as session:
         try:
             yield session
             await session.commit()
