@@ -8,24 +8,57 @@ Company: FinSight AI Limited
 Website: https://www.finsightai.tech
 """
 
+import logging
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.routers import auth, users, organisations, subscriptions, dashboards, demo
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # Create database tables on startup
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
-    # Startup: Create tables if they don't exist
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    logger.info("=" * 50)
+    logger.info("FinSight AI Backend Starting")
+    logger.info(f"Environment: {settings.ENVIRONMENT}")
+    logger.info(f"Debug Mode: {settings.DEBUG}")
+    logger.info(f"Port: {os.getenv('PORT', '8000')}")
+    logger.info(f"Database URL configured: {bool(settings.DATABASE_URL)}")
+    logger.info("=" * 50)
+
+    try:
+        # Startup: Create tables if they don't exist
+        logger.info("Connecting to database...")
+        async with engine.begin() as conn:
+            logger.info("Database connected. Creating tables...")
+            await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database tables created successfully")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
+        logger.warning("Application will continue but database operations may fail")
+
+    logger.info("Application startup complete - Ready to accept requests")
     yield
+
     # Shutdown: Clean up resources
-    await engine.dispose()
+    logger.info("Shutting down application...")
+    try:
+        await engine.dispose()
+        logger.info("Database connection closed")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}")
 
 
 # Initialise FastAPI app
@@ -90,9 +123,20 @@ async def root():
 @app.get("/health", tags=["Health"])
 async def health_check():
     """Detailed health check endpoint."""
+    logger.debug("Health check requested")
+    try:
+        # Test database connection
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        db_status = "connected"
+    except Exception as e:
+        logger.error(f"Database health check failed: {e}")
+        db_status = "disconnected"
+
     return {
         "status": "healthy",
-        "database": "connected",
+        "database": db_status,
         "service": "FinSight AI API",
-        "environment": settings.ENVIRONMENT
+        "environment": settings.ENVIRONMENT,
+        "port": os.getenv("PORT", "8000")
     }
