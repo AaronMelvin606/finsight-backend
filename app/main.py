@@ -11,21 +11,46 @@ Website: https://www.finsightai.tech
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import logging
 
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.routers import auth, users, organisations, subscriptions, dashboards, demo
 
+logger = logging.getLogger(__name__)
+
 # Create database tables on startup
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
-    # Startup: Create tables if they don't exist
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield
-    # Shutdown: Clean up resources
-    await engine.dispose()
+    try:
+        # Startup: Create tables if they don't exist
+        logger.info("=" * 80)
+        logger.info("STARTING FINSIGHT AI BACKEND")
+        logger.info("=" * 80)
+        logger.info("Connecting to database and creating tables...")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("✓ Database tables created successfully")
+        logger.info("✓ Application startup complete")
+        logger.info("=" * 80)
+        yield
+        # Shutdown: Clean up resources
+        logger.info("Shutting down application...")
+        await engine.dispose()
+        logger.info("✓ Database connections closed")
+    except Exception as e:
+        logger.error("=" * 80)
+        logger.error("STARTUP ERROR - Application failed to start!")
+        logger.error("=" * 80)
+        logger.error(f"Error: {str(e)}")
+        logger.error("")
+        logger.error("Possible causes:")
+        logger.error("  1. Database connection failed (check DATABASE_URL)")
+        logger.error("  2. Database is unreachable")
+        logger.error("  3. Database credentials are incorrect")
+        logger.error("=" * 80)
+        raise
 
 
 # Initialise FastAPI app
@@ -90,9 +115,35 @@ async def root():
 @app.get("/health", tags=["Health"])
 async def health_check():
     """Detailed health check endpoint."""
+    import asyncio
+    from sqlalchemy import text
+
+    db_status = "unknown"
+    db_details = None
+
+    try:
+        # Test database connection with timeout
+        async with engine.connect() as conn:
+            result = await asyncio.wait_for(
+                conn.execute(text("SELECT 1")),
+                timeout=5.0
+            )
+            db_status = "connected"
+            db_details = "Database connection successful"
+    except asyncio.TimeoutError:
+        db_status = "timeout"
+        db_details = "Database connection timed out after 5 seconds"
+        logger.warning(f"Health check: {db_details}")
+    except Exception as e:
+        db_status = "error"
+        db_details = f"Database error: {str(e)}"
+        logger.error(f"Health check: {db_details}")
+
     return {
-        "status": "healthy",
-        "database": "connected",
+        "status": "healthy" if db_status == "connected" else "degraded",
+        "database": db_status,
+        "database_details": db_details,
         "service": "FinSight AI API",
-        "environment": settings.ENVIRONMENT
+        "environment": settings.ENVIRONMENT,
+        "version": "1.0.0"
     }
