@@ -23,15 +23,32 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
+    import asyncio
     try:
         # Startup: Create tables if they don't exist
         logger.info("=" * 80)
         logger.info("STARTING FINSIGHT AI BACKEND")
         logger.info("=" * 80)
         logger.info("Connecting to database and creating tables...")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("✓ Database tables created successfully")
+
+        # Add timeout to prevent indefinite hanging
+        async def create_tables():
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+        try:
+            # 60 second timeout for table creation
+            await asyncio.wait_for(create_tables(), timeout=60.0)
+            logger.info("✓ Database tables created successfully")
+        except asyncio.TimeoutError:
+            logger.warning("⚠ Database table creation timed out after 60 seconds")
+            logger.warning("⚠ Tables may already exist or database is slow - continuing startup")
+            # Continue anyway - tables might already exist
+        except Exception as db_error:
+            logger.error(f"⚠ Database table creation error: {str(db_error)}")
+            logger.warning("⚠ Continuing startup - tables may already exist")
+            # Continue anyway - in production, tables should already exist
+
         logger.info("✓ Application startup complete")
         logger.info("=" * 80)
         yield
