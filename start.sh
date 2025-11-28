@@ -5,19 +5,38 @@
 set -euo pipefail
 
 log() {
-  # shellcheck disable=SC2039
   printf "[start.sh] %s\n" "$1"
 }
 
-# Capture termination signals so we can see why the process is exiting on Railway
-on_term() {
-  log "Received shutdown signal (SIGTERM) from platform – exiting uvicorn"
+PORT=${PORT:-8080}
+UVICORN_ARGS=(
+  --host 0.0.0.0
+  --port "$PORT"
+  --proxy-headers
+  --forwarded-allow-ips "*"
+  --timeout-keep-alive 75
+)
+
+start_uvicorn() {
+  log "Starting uvicorn on port ${PORT} with proxy headers enabled"
+  uvicorn app.main:app "${UVICORN_ARGS[@]}" &
+  UVICORN_PID=$!
+  log "uvicorn started with PID ${UVICORN_PID}"
 }
-trap on_term TERM
 
-# Get PORT from environment variable, default to 8000 if not set
-PORT=${PORT:-8000}
-log "Starting uvicorn on port ${PORT}"
+shutdown() {
+  log "Received shutdown signal from platform – forwarding to uvicorn"
+  if kill -0 "${UVICORN_PID:-0}" 2>/dev/null; then
+    kill -TERM "$UVICORN_PID"
+    wait "$UVICORN_PID" || true
+  fi
+  exit 0
+}
 
-# Start uvicorn with the correct port
-exec uvicorn app.main:app --host 0.0.0.0 --port "$PORT"
+trap shutdown TERM INT
+
+start_uvicorn
+wait "$UVICORN_PID"
+EXIT_CODE=$?
+log "uvicorn exited with status ${EXIT_CODE}"
+exit "$EXIT_CODE"
