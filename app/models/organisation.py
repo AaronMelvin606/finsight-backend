@@ -101,6 +101,11 @@ class Organisation(Base):
         back_populates="organisation",
         cascade="all, delete-orphan"
     )
+    financial_records = relationship(
+        "FinancialRecord",
+        back_populates="organisation",
+        cascade="all, delete-orphan"
+    )
     
     def __repr__(self):
         return f"<Organisation {self.name}>"

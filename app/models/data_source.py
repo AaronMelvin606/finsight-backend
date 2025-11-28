@@ -2,12 +2,14 @@
 # FINSIGHT AI - DATA SOURCE MODELS
 # ============================================
 
+import uuid
 from datetime import datetime
 from typing import Optional
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, 
+    Column, Integer, String, Text, DateTime,
     ForeignKey, Boolean, Numeric, Enum, JSON
 )
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 import enum
 
@@ -39,10 +41,10 @@ class DataSource(Base):
     """
     __tablename__ = "data_sources"
 
-    id = Column(Integer, primary_key=True, index=True)
-    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+
     # Relationship to organisation
-    organisation_id = Column(Integer, ForeignKey("organisations.id"), nullable=False)
+    organisation_id = Column(UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False)
     
     # Source details
     name = Column(String(255), nullable=False)
@@ -80,11 +82,11 @@ class FinancialRecord(Base):
     """
     __tablename__ = "financial_records"
 
-    id = Column(Integer, primary_key=True, index=True)
-    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+
     # Relationships
-    data_source_id = Column(Integer, ForeignKey("data_sources.id"), nullable=False)
-    organisation_id = Column(Integer, ForeignKey("organisations.id"), nullable=False)
+    data_source_id = Column(UUID(as_uuid=True), ForeignKey("data_sources.id"), nullable=False)
+    organisation_id = Column(UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False)
     
     # Record identification
     external_id = Column(String(255), nullable=True)  # ID from source system
