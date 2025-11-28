@@ -32,6 +32,6 @@ USER finsight
 # Expose port
 EXPOSE 8000
 
-# Railway provides PORT as environment variable
-# Use shell form to properly expand the variable
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+# Start the application
+# Note: Railway's railway.toml startCommand will override this CMD
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
