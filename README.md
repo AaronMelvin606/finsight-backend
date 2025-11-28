@@ -251,3 +251,4 @@ Copyright (c) 2025 FinSight AI Limited. All rights reserved.
 ---
 
 Built with ❤️ by Aaron Melvin, Founder of FinSight AI
+
