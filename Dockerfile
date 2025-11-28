@@ -32,7 +32,7 @@ RUN adduser --disabled-password --gecos '' finsight && \
     chown -R finsight:finsight /app
 USER finsight
 
-# Expose port
+# Expose port (Railway will override with $PORT)
 EXPOSE 8000
 
 # Start the application using startup script
