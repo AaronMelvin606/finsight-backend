@@ -24,6 +24,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Set permissions for startup script
+RUN chmod +x start.sh
+
 # Create non-root user for security
 RUN adduser --disabled-password --gecos '' finsight && \
     chown -R finsight:finsight /app
@@ -32,6 +35,6 @@ USER finsight
 # Expose port
 EXPOSE 8000
 
-# Start the application
+# Start the application using startup script
 # Note: Railway's railway.toml startCommand will override this CMD
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["./start.sh"]
