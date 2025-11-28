@@ -131,7 +131,18 @@ async def root():
 
 @app.get("/health", tags=["Health"])
 async def health_check():
-    """Detailed health check endpoint."""
+    """Fast health check endpoint for Railway deployment."""
+    return {
+        "status": "healthy",
+        "service": "FinSight AI API",
+        "environment": settings.ENVIRONMENT,
+        "version": "1.0.0"
+    }
+
+
+@app.get("/health/detailed", tags=["Health"])
+async def detailed_health_check():
+    """Detailed health check endpoint with database connection test."""
     import asyncio
     from sqlalchemy import text
 
