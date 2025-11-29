@@ -88,8 +88,10 @@ finsight-backend/
 ├── .env.example
 ├── .gitignore
 ├── Dockerfile
-├── railway.toml             # Railway deployment config
-├── render.yaml              # Render deployment config
+├── .gcloudignore            # Cloud Run deployment ignore file
+├── Procfile                 # Platform compatibility
+├── railway.toml.bak         # Railway config (deprecated, backup only)
+├── render.yaml              # Render deployment config (backup)
 └── README.md
 ```
 
@@ -152,28 +154,41 @@ finsight-backend/
 
 ## 🚢 Deployment
 
-### Railway (Recommended)
+### Google Cloud Run (Production)
 
-1. Create account at https://railway.app
-2. Connect your GitHub repository
-3. Add environment variables in Railway dashboard
-4. Deploy!
+The backend is deployed to Google Cloud Run with automatic CI/CD from GitHub.
 
+**Service URL:** `https://finsight-api-[hash]-uc.a.run.app`
+
+**Deployment:**
+- Push to `main` branch triggers automatic deployment
+- Cloud Build creates container image
+- Cloud Run deploys with zero-downtime
+
+**Environment Variables (set in Cloud Run):**
+- `DATABASE_URL` - PostgreSQL connection string (via Secret Manager)
+- `SECRET_KEY` - JWT signing key (via Secret Manager)
+- `ENVIRONMENT` - `production`
+- `FRONTEND_URL` - `https://www.finsightai.tech`
+
+**Local Development:**
 ```bash
-# Environment variables to set:
-DATABASE_URL=postgresql://...
-SECRET_KEY=...
-STRIPE_SECRET_KEY=...
-FRONTEND_URL=https://www.finsightai.tech
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # or `venv\Scripts\activate` on Windows
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run locally
+uvicorn app.main:app --reload --port 8000
 ```
 
-### Render
-
-1. Create account at https://render.com
-2. Create new Web Service
-3. Connect GitHub repository
-4. Configure environment variables
-5. Deploy!
+**Health Check:**
+```bash
+curl https://[service-url]/health
+# Expected: {"status":"healthy"}
+```
 
 ### Docker
 
@@ -181,8 +196,8 @@ FRONTEND_URL=https://www.finsightai.tech
 # Build image
 docker build -t finsight-api .
 
-# Run container
-docker run -p 8000:8000 --env-file .env finsight-api
+# Run container (Cloud Run uses port 8080)
+docker run -p 8080:8080 --env-file .env finsight-api
 ```
 
 ## 🔧 Development Commands
