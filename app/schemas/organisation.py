@@ -5,8 +5,9 @@ Pydantic models for organisation request/response validation.
 """
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
+from uuid import UUID
 from enum import Enum
 import re
 
@@ -71,14 +72,17 @@ class OrganisationResponse(BaseModel):
     id: str
     name: str
     slug: str
-    industry: Optional[str]
-    size: Optional[str]
-    website: Optional[str]
+    industry: Optional[str] = None
+    size: Optional[str] = None
+    website: Optional[str] = None
     subscription_tier: str
     subscription_status: str
-    trial_ends_at: Optional[datetime]
+    max_users: int = 3
+    settings: Dict[str, Any] = {}
+    is_active: bool = True
+    trial_ends_at: Optional[datetime] = None
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -118,9 +122,16 @@ class SubscriptionInfo(BaseModel):
     """Schema for subscription information."""
     tier: SubscriptionTierEnum
     status: SubscriptionStatusEnum
-    trial_ends_at: Optional[datetime]
+    trial_ends_at: Optional[datetime] = None
     features: List[str]
     limits: dict
+
+
+class OrganisationWithStats(OrganisationResponse):
+    """Organisation response with usage statistics."""
+    user_count: int = 0
+    data_row_count: int = 0
+    last_upload_date: Optional[datetime] = None
 
 
 # Feature definitions per tier
