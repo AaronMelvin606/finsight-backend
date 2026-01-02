@@ -16,7 +16,7 @@ import os
 
 from app.core.config import settings
 from app.core.database import engine, Base
-from app.routers import auth, users, organisations, subscriptions, dashboards, demo
+from app.routers import auth, users, organisations, subscriptions, dashboards, demo, financial_data
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,7 @@ app.include_router(organisations.router, prefix="/api/v1/organisations", tags=["
 app.include_router(subscriptions.router, prefix="/api/v1/subscriptions", tags=["Subscriptions"])
 app.include_router(dashboards.router, prefix="/api/v1/dashboards", tags=["Dashboards"])
 app.include_router(demo.router, prefix="/api/v1/demo", tags=["Demo Access"])
+app.include_router(financial_data.router, prefix="/api/v1/data", tags=["Financial Data"])
 
 
 @app.get("/", tags=["Health"])
