@@ -18,26 +18,36 @@ from app.models.data_source import (
     DataSourceType,
     ConnectionStatus
 )
+from app.models.financial_data import (
+    FinancialData,
+    DataUpload,
+    KPIMetric
+)
 from app.models.demo import DemoAccess, ContactInquiry
 
 
 __all__ = [
     # User
     "User",
-    
+
     # Organisation
     "Organisation",
     "OrganisationMember",
     "SubscriptionTier",
     "SubscriptionStatus",
     "MemberRole",
-    
+
     # Data Sources
     "DataSource",
     "FinancialRecord",
     "DataSourceType",
     "ConnectionStatus",
-    
+
+    # Financial Data (Multi-tenancy)
+    "FinancialData",
+    "DataUpload",
+    "KPIMetric",
+
     # Demo & Contact
     "DemoAccess",
     "ContactInquiry",
