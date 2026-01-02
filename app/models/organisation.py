@@ -6,7 +6,7 @@ SQLAlchemy models for organisations (tenants) and memberships.
 
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum, Text
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum, Text, Integer, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 import enum
@@ -85,12 +85,22 @@ class Organisation(Base):
     # Stripe
     stripe_customer_id = Column(String(255), nullable=True, unique=True)
     stripe_subscription_id = Column(String(255), nullable=True)
-    
+
+    # Multi-tenancy settings
+    max_users = Column(Integer, default=3)
+    settings = Column(JSON, default={})
+    is_active = Column(Boolean, default=True)
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
+    users = relationship(
+        "User",
+        back_populates="organisation",
+        foreign_keys="User.organisation_id"
+    )
     members = relationship(
         "OrganisationMember",
         back_populates="organisation",
@@ -106,9 +116,51 @@ class Organisation(Base):
         back_populates="organisation",
         cascade="all, delete-orphan"
     )
-    
+    financial_data = relationship(
+        "FinancialData",
+        back_populates="organisation",
+        cascade="all, delete-orphan"
+    )
+    uploads = relationship(
+        "DataUpload",
+        back_populates="organisation",
+        cascade="all, delete-orphan"
+    )
+    kpi_metrics = relationship(
+        "KPIMetric",
+        back_populates="organisation",
+        cascade="all, delete-orphan"
+    )
+
     def __repr__(self):
         return f"<Organisation {self.name}>"
+
+    @property
+    def tier_limits(self):
+        """Return limits based on subscription tier"""
+        limits = {
+            "trial": {
+                "max_users": 2,
+                "max_data_rows": 1000,
+                "features": ["basic_dashboards", "csv_upload"]
+            },
+            "essentials": {
+                "max_users": 3,
+                "max_data_rows": 10000,
+                "features": ["basic_dashboards", "csv_upload", "email_support"]
+            },
+            "professional": {
+                "max_users": 10,
+                "max_data_rows": 100000,
+                "features": ["advanced_dashboards", "csv_upload", "api_integrations", "priority_support", "scenario_planning"]
+            },
+            "enterprise": {
+                "max_users": -1,  # Unlimited
+                "max_data_rows": -1,  # Unlimited
+                "features": ["all_dashboards", "csv_upload", "api_integrations", "custom_integrations", "dedicated_support", "scenario_planning", "ai_insights"]
+            }
+        }
+        return limits.get(self.subscription_tier, limits["essentials"])
 
 
 class OrganisationMember(Base):

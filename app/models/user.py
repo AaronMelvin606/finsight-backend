@@ -6,7 +6,7 @@ SQLAlchemy model for users.
 
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Boolean, DateTime, Text
+from sqlalchemy import Column, String, Boolean, DateTime, Text, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -53,8 +53,13 @@ class User(Base):
     
     # Email verification
     verification_token = Column(String(255), nullable=True)
-    
+
+    # Multi-tenancy fields
+    organisation_id = Column(UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=True)
+    role = Column(String(50), default="member")  # owner, admin, member, viewer
+
     # Relationships
+    organisation = relationship("Organisation", back_populates="users", foreign_keys=[organisation_id])
     organisation_memberships = relationship(
         "OrganisationMember",
         back_populates="user",
@@ -63,3 +68,19 @@ class User(Base):
     
     def __repr__(self):
         return f"<User {self.email}>"
+
+    @property
+    def is_org_owner(self):
+        return self.role == "owner"
+
+    @property
+    def is_org_admin(self):
+        return self.role in ["owner", "admin"]
+
+    @property
+    def can_upload_data(self):
+        return self.role in ["owner", "admin", "member"]
+
+    @property
+    def can_view_data(self):
+        return self.role in ["owner", "admin", "member", "viewer"]
