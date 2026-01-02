@@ -4,7 +4,7 @@ FinSight AI - API Routers
 Export all routers.
 """
 
-from app.routers import auth, users, organisations, subscriptions, dashboards, demo
+from app.routers import auth, users, organisations, subscriptions, dashboards, demo, financial_data
 
 __all__ = [
     "auth",
@@ -13,4 +13,5 @@ __all__ = [
     "subscriptions",
     "dashboards",
     "demo",
+    "financial_data",
 ]
