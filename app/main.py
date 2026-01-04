@@ -12,7 +12,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
-import os
 
 from app.core.config import settings
 from app.core.database import engine, Base
@@ -95,18 +94,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS for Netlify frontend and Cloud Run
+# Allowed origins for CORS
 origins = [
-    "https://www.finsightai.tech",
     "https://finsightai.tech",
-    "http://localhost:3000",  # Local development
-    "http://localhost:5173",  # Vite dev server
+    "https://www.finsightai.tech",
+    "https://finsightai-dashboard.netlify.app",
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
 ]
-
-# Add Cloud Run URL pattern (will be set after deployment)
-cloud_run_url = os.getenv("CLOUD_RUN_URL", "")
-if cloud_run_url:
-    origins.append(cloud_run_url)
 
 app.add_middleware(
     CORSMiddleware,
