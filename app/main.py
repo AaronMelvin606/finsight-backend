@@ -8,8 +8,10 @@ Company: FinSight AI Limited
 Website: https://www.finsightai.tech
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from contextlib import asynccontextmanager
 import logging
 
@@ -104,13 +106,60 @@ origins = [
     "http://127.0.0.1:5173",
 ]
 
+# Add CORS middleware FIRST - before any other middleware or exception handlers
+# so that all responses (including errors) pass through it
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+
+def _get_cors_headers(request: Request) -> dict:
+    """Build CORS headers if the request origin is allowed."""
+    origin = request.headers.get("origin", "")
+    if origin in origins:
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    return {}
+
+
+# Exception handlers that include CORS headers as a safety net.
+# Without these, error responses (4xx/5xx) can bypass CORSMiddleware
+# and arrive at the browser without Access-Control-Allow-Origin.
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    headers = _get_cors_headers(request)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=headers,
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    headers = _get_cors_headers(request)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+        headers=headers,
+    )
+
+
+# Explicit OPTIONS handler for preflight requests as a fallback
+@app.options("/{rest_of_path:path}")
+async def preflight_handler(request: Request, rest_of_path: str):
+    headers = _get_cors_headers(request)
+    return JSONResponse(content={"message": "OK"}, headers=headers)
 
 
 # Include routers
