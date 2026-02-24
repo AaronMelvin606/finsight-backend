@@ -27,10 +27,11 @@ class Settings(BaseSettings):
     DEBUG: bool = True
 
     # Database (Neon PostgreSQL)
-    DATABASE_URL: str  # Required - your Neon connection string
+    # Defaults allow the container to start for health checks even without env vars
+    DATABASE_URL: str = "postgresql://localhost/finsight"
 
     # JWT Authentication
-    SECRET_KEY: str  # Required - generate with: openssl rand -hex 32
+    SECRET_KEY: str = "CHANGE-ME-set-SECRET_KEY-env-var"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -80,10 +81,17 @@ def get_settings() -> Settings:
         logger.info(f"  - Environment: {settings.ENVIRONMENT}")
         logger.info(f"  - Database URL: {'*' * 20}...{settings.DATABASE_URL[-20:] if len(settings.DATABASE_URL) > 20 else '***'}")
         logger.info(f"  - Secret Key: {'*' * 10}... (hidden)")
+
+        # Warn if using default placeholder values
+        if settings.SECRET_KEY == "CHANGE-ME-set-SECRET_KEY-env-var":
+            logger.warning("⚠ SECRET_KEY is using a default value! Set the SECRET_KEY environment variable.")
+        if settings.DATABASE_URL == "postgresql://localhost/finsight":
+            logger.warning("⚠ DATABASE_URL is using a default value! Set the DATABASE_URL environment variable.")
+
         return settings
     except Exception as e:
         logger.error("=" * 80)
-        logger.error("CONFIGURATION ERROR - Application cannot start!")
+        logger.error("CONFIGURATION ERROR")
         logger.error("=" * 80)
         logger.error(f"Error: {str(e)}")
         logger.error("")
@@ -91,13 +99,11 @@ def get_settings() -> Settings:
         logger.error("  - DATABASE_URL: PostgreSQL connection string (from Neon)")
         logger.error("  - SECRET_KEY: JWT secret key (generate with: openssl rand -hex 32)")
         logger.error("")
-        logger.error("Please set these environment variables in your Railway dashboard:")
-        logger.error("  1. Go to your Railway project")
-        logger.error("  2. Click on your service")
-        logger.error("  3. Go to 'Variables' tab")
-        logger.error("  4. Add DATABASE_URL and SECRET_KEY")
+        logger.error("Set these in your Cloud Run service configuration.")
         logger.error("=" * 80)
-        sys.exit(1)
+        # Return settings with defaults so the container can still start
+        # for health checks. API endpoints will fail gracefully.
+        return Settings()
 
 
 settings = get_settings()
