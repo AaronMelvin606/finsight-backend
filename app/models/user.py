@@ -64,7 +64,7 @@ class User(Base):
         "OrganisationMember",
         back_populates="user",
         cascade="all, delete-orphan",
-        foreign_keys="OrganisationMember.user_id"
+        foreign_keys="[OrganisationMember.user_id]"
     )
     
     def __repr__(self):
