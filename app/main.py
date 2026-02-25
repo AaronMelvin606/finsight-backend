@@ -183,6 +183,96 @@ app.include_router(demo.router, prefix="/api/v1/demo", tags=["Demo Access"])
 app.include_router(financial_data.router, prefix="/api/v1/data", tags=["Financial Data"])
 
 
+@app.get("/test-register", tags=["Debug"])
+async def test_register():
+    """
+    Diagnostic endpoint to expose import/initialisation errors in the
+    auth-register flow.  Tries every import that POST /api/v1/auth/register
+    would trigger and returns the first error it hits.
+    """
+    errors = []
+
+    # 1. Import auth_service and its transitive deps
+    try:
+        from app.services.auth_service import get_user_by_email
+    except Exception as e:
+        errors.append(f"import auth_service.get_user_by_email: {type(e).__name__}: {e}")
+
+    try:
+        from app.services.auth_service import (
+            authenticate_user,
+            create_user_with_organisation,
+            create_tokens_for_user,
+        )
+    except Exception as e:
+        errors.append(f"import auth_service (remaining): {type(e).__name__}: {e}")
+
+    # 2. Import schemas used by the register endpoint
+    try:
+        from app.schemas.auth import UserRegister, Token, UserResponse, TokenData
+    except Exception as e:
+        errors.append(f"import schemas.auth: {type(e).__name__}: {e}")
+
+    # 3. Import models
+    try:
+        from app.models.user import User
+    except Exception as e:
+        errors.append(f"import models.user: {type(e).__name__}: {e}")
+
+    try:
+        from app.models.organisation import Organisation, OrganisationMember, MemberRole
+    except Exception as e:
+        errors.append(f"import models.organisation: {type(e).__name__}: {e}")
+
+    # 4. Import deps (get_current_user) and security
+    try:
+        from app.api.deps import get_current_user
+    except Exception as e:
+        errors.append(f"import api.deps: {type(e).__name__}: {e}")
+
+    try:
+        from app.core.security import get_password_hash, verify_password
+    except Exception as e:
+        errors.append(f"import core.security: {type(e).__name__}: {e}")
+
+    # 5. Try CryptContext(bcrypt) — known passlib/bcrypt compat issue
+    try:
+        from passlib.context import CryptContext
+        ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        hashed = ctx.hash("testpassword123")
+        ok = ctx.verify("testpassword123", hashed)
+        errors.append(f"passlib bcrypt hash+verify: OK (verify={ok})")
+    except Exception as e:
+        errors.append(f"passlib CryptContext(bcrypt) FAILED: {type(e).__name__}: {e}")
+
+    # 6. Try calling get_user_by_email with a mock db session
+    try:
+        from app.services.auth_service import get_user_by_email as _gube
+        from unittest.mock import AsyncMock
+        fake_db = AsyncMock()
+        fake_db.execute.return_value.scalar_one_or_none.return_value = None
+        result = await _gube(fake_db, "test@example.com")
+        errors.append(f"get_user_by_email(fake_db): returned {result}")
+    except Exception as e:
+        errors.append(f"get_user_by_email(fake_db) FAILED: {type(e).__name__}: {e}")
+
+    # 7. Try the real database session
+    try:
+        from app.core.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import text
+            await session.execute(text("SELECT 1"))
+        errors.append("database session: OK")
+    except Exception as e:
+        errors.append(f"database session FAILED: {type(e).__name__}: {e}")
+
+    return {
+        "test": "register-import-diagnostic",
+        "results": errors,
+        "total_checks": len(errors),
+    }
+
+
 @app.get("/", tags=["Health"])
 async def root():
     """Root endpoint - API health check."""
