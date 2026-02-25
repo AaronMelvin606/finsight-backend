@@ -38,7 +38,10 @@ from app.services.auth_service import (
 )
 
 import uuid
+import logging
+import traceback
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -52,48 +55,65 @@ async def register(
     Register a new user and create their organisation.
     Returns access and refresh tokens with user and organisation info.
     """
-    # Check if email already exists
-    existing_user = await get_user_by_email(db, user_data.email)
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+    try:
+        logger.info(f"[REGISTER] Starting registration for email={user_data.email}")
+
+        # Check if email already exists
+        existing_user = await get_user_by_email(db, user_data.email)
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+
+        logger.info("[REGISTER] Email check passed, creating user with organisation")
+
+        # Create user with organisation
+        user = await create_user_with_organisation(db, user_data)
+
+        logger.info(f"[REGISTER] User created: id={user.id}, org_id={user.organisation_id}")
+
+        # Create tokens
+        tokens = create_tokens_for_user(user)
+
+        logger.info("[REGISTER] Tokens created, building response")
+
+        # Build response
+        user_response = UserResponse(
+            id=str(user.id),
+            email=user.email,
+            full_name=user.full_name,
+            job_title=user.job_title,
+            is_active=user.is_active,
+            is_verified=user.is_verified,
+            role=user.role or "member",
+            organisation_id=str(user.organisation_id) if user.organisation_id else None,
+            created_at=user.created_at,
+            last_login_at=user.last_login_at,
         )
 
-    # Create user with organisation
-    user = await create_user_with_organisation(db, user_data)
+        org_response = None
+        if user.organisation:
+            org_response = {
+                "id": str(user.organisation.id),
+                "name": user.organisation.name,
+                "slug": user.organisation.slug,
+                "subscription_tier": user.organisation.subscription_tier
+            }
 
-    # Create tokens
-    tokens = create_tokens_for_user(user)
+        logger.info("[REGISTER] Registration successful")
 
-    # Build response
-    user_response = UserResponse(
-        id=str(user.id),
-        email=user.email,
-        full_name=user.full_name,
-        job_title=user.job_title,
-        is_active=user.is_active,
-        is_verified=user.is_verified,
-        role=user.role or "member",
-        organisation_id=str(user.organisation_id) if user.organisation_id else None,
-        created_at=user.created_at,
-        last_login_at=user.last_login_at,
-    )
-
-    org_response = None
-    if user.organisation:
-        org_response = {
-            "id": str(user.organisation.id),
-            "name": user.organisation.name,
-            "slug": user.organisation.slug,
-            "subscription_tier": user.organisation.subscription_tier
-        }
-
-    return Token(
-        **tokens,
-        user=user_response,
-        organisation=org_response
-    )
+        return Token(
+            **tokens,
+            user=user_response,
+            organisation=org_response
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[REGISTER] Unhandled exception during registration: {type(e).__name__}: {e}")
+        logger.error(f"[REGISTER] Full traceback:\n{traceback.format_exc()}")
+        raise
 
 
 @router.post("/login", response_model=Token)

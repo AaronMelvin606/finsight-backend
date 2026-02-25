@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 import re
+import logging
+import traceback
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -19,6 +21,8 @@ from app.core.config import settings
 from app.models.user import User
 from app.models.organisation import Organisation
 from app.schemas.auth import UserRegister, TokenData
+
+logger = logging.getLogger(__name__)
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -76,12 +80,20 @@ def decode_token(token: str) -> Optional[TokenData]:
 
 async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
     """Get user by email with organisation loaded."""
-    result = await db.execute(
-        select(User)
-        .options(selectinload(User.organisation))
-        .where(User.email == email.lower())
-    )
-    return result.scalar_one_or_none()
+    try:
+        logger.info(f"[AUTH_SERVICE] get_user_by_email called for email={email.lower()}")
+        result = await db.execute(
+            select(User)
+            .options(selectinload(User.organisation))
+            .where(User.email == email.lower())
+        )
+        user = result.scalar_one_or_none()
+        logger.info(f"[AUTH_SERVICE] get_user_by_email result: {'found' if user else 'not found'}")
+        return user
+    except Exception as e:
+        logger.error(f"[AUTH_SERVICE] get_user_by_email FAILED: {type(e).__name__}: {e}")
+        logger.error(f"[AUTH_SERVICE] Full traceback:\n{traceback.format_exc()}")
+        raise
 
 
 async def get_user_by_id(db: AsyncSession, user_id: UUID) -> Optional[User]:
@@ -111,54 +123,65 @@ async def create_user_with_organisation(
     user_data: UserRegister
 ) -> User:
     """Create a new user and their organisation."""
+    try:
+        # Determine organisation name
+        org_name = user_data.organisation_name or user_data.company_name or f"{user_data.full_name}'s Organisation"
+        logger.info(f"[AUTH_SERVICE] create_user_with_organisation: org_name={org_name}")
 
-    # Determine organisation name
-    org_name = user_data.organisation_name or user_data.company_name or f"{user_data.full_name}'s Organisation"
+        # Generate unique slug
+        base_slug = generate_slug(org_name)
+        slug = base_slug
+        counter = 1
 
-    # Generate unique slug
-    base_slug = generate_slug(org_name)
-    slug = base_slug
-    counter = 1
+        while True:
+            existing = await db.execute(
+                select(Organisation).where(Organisation.slug == slug)
+            )
+            if not existing.scalar_one_or_none():
+                break
+            slug = f"{base_slug}-{counter}"
+            counter += 1
 
-    while True:
-        existing = await db.execute(
-            select(Organisation).where(Organisation.slug == slug)
+        logger.info(f"[AUTH_SERVICE] Creating organisation with slug={slug}")
+
+        # Create organisation
+        organisation = Organisation(
+            name=org_name,
+            slug=slug,
+            subscription_tier="essentials",
+            subscription_status="trial",
+            settings={}
         )
-        if not existing.scalar_one_or_none():
-            break
-        slug = f"{base_slug}-{counter}"
-        counter += 1
+        db.add(organisation)
+        await db.flush()  # Get the organisation ID
+        logger.info(f"[AUTH_SERVICE] Organisation flushed: id={organisation.id}")
 
-    # Create organisation
-    organisation = Organisation(
-        name=org_name,
-        slug=slug,
-        subscription_tier="essentials",
-        subscription_status="trial",
-        settings={}
-    )
-    db.add(organisation)
-    await db.flush()  # Get the organisation ID
+        # Create user as owner of the organisation
+        user = User(
+            email=user_data.email.lower(),
+            hashed_password=hash_password(user_data.password),
+            full_name=user_data.full_name,
+            job_title=user_data.job_title,
+            organisation_id=organisation.id,
+            role="owner",
+            is_active=True,
+            is_verified=False
+        )
+        db.add(user)
+        logger.info("[AUTH_SERVICE] User added to session, committing")
+        await db.commit()
+        logger.info("[AUTH_SERVICE] Committed, refreshing user")
+        await db.refresh(user)
 
-    # Create user as owner of the organisation
-    user = User(
-        email=user_data.email.lower(),
-        hashed_password=hash_password(user_data.password),
-        full_name=user_data.full_name,
-        job_title=user_data.job_title,
-        organisation_id=organisation.id,
-        role="owner",
-        is_active=True,
-        is_verified=False
-    )
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
+        # Load the organisation relationship
+        await db.refresh(user, ["organisation"])
+        logger.info(f"[AUTH_SERVICE] User created successfully: id={user.id}")
 
-    # Load the organisation relationship
-    await db.refresh(user, ["organisation"])
-
-    return user
+        return user
+    except Exception as e:
+        logger.error(f"[AUTH_SERVICE] create_user_with_organisation FAILED: {type(e).__name__}: {e}")
+        logger.error(f"[AUTH_SERVICE] Full traceback:\n{traceback.format_exc()}")
+        raise
 
 
 def create_tokens_for_user(user: User) -> dict:
