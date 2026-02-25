@@ -12,20 +12,17 @@ import logging
 import traceback
 
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.core.security import verify_password, get_password_hash
 from app.models.user import User
 from app.models.organisation import Organisation
 from app.schemas.auth import UserRegister, TokenData
 
 logger = logging.getLogger(__name__)
-
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def generate_slug(name: str) -> str:
@@ -35,16 +32,6 @@ def generate_slug(name: str) -> str:
     slug = re.sub(r'[\s_]+', '-', slug)
     slug = re.sub(r'-+', '-', slug)
     return slug.strip('-')[:100]
-
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a plain password against a hash."""
-    return pwd_context.verify(plain_password, hashed_password)
-
-
-def hash_password(password: str) -> str:
-    """Hash a password for storage."""
-    return pwd_context.hash(password)
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -159,7 +146,7 @@ async def create_user_with_organisation(
         # Create user as owner of the organisation
         user = User(
             email=user_data.email.lower(),
-            hashed_password=hash_password(user_data.password),
+            hashed_password=get_password_hash(user_data.password),
             full_name=user_data.full_name,
             job_title=user_data.job_title,
             organisation_id=organisation.id,
