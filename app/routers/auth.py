@@ -6,13 +6,15 @@ API endpoints for user authentication with organisation context.
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 from datetime import datetime, timezone
 
 from app.core.database import get_db
 from app.core.security import (
     get_password_hash,
+    verify_password,
+    create_access_token,
     decode_token as security_decode_token,
 )
 from app.core.config import settings
@@ -371,3 +373,144 @@ async def confirm_password_reset(
     await db.commit()
 
     return {"message": "Password has been reset successfully"}
+
+
+# ---------------------------------------------------------------------------
+# Simple diagnostic endpoints — raw SQL only, no ORM relationships
+# ---------------------------------------------------------------------------
+
+@router.post("/register-simple")
+async def register_simple(
+    payload: dict,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Minimal registration using raw SQL inserts.
+    Bypasses all ORM relationship loading to isolate DB connectivity issues.
+    Body: {"email": "...", "password": "...", "full_name": "...", "organisation_name": "..."}
+    """
+    email = payload.get("email", "").strip().lower()
+    password = payload.get("password", "")
+    full_name = payload.get("full_name", "")
+    organisation_name = payload.get("organisation_name", "")
+
+    if not all([email, password, full_name, organisation_name]):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="email, password, full_name, and organisation_name are all required"
+        )
+
+    # Check for existing email with raw SQL
+    check_result = await db.execute(
+        text("SELECT id FROM users WHERE email = :email"),
+        {"email": email}
+    )
+    if check_result.fetchone():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+
+    org_id = str(uuid.uuid4())
+    user_id = str(uuid.uuid4())
+    hashed_pw = get_password_hash(password)
+
+    # Build a URL-safe slug from the organisation name
+    import re
+    slug_base = re.sub(r"[^a-z0-9]+", "-", organisation_name.lower()).strip("-")[:80]
+    slug = f"{slug_base}-{org_id[:8]}"
+
+    # Insert organisation
+    await db.execute(
+        text(
+            "INSERT INTO organisations "
+            "(id, name, slug, subscription_tier, subscription_status, "
+            " max_users, settings, is_active, created_at, updated_at) "
+            "VALUES "
+            "(:id, :name, :slug, 'trial', 'trial', 3, '{}', true, now(), now())"
+        ),
+        {"id": org_id, "name": organisation_name, "slug": slug}
+    )
+
+    # Insert user
+    await db.execute(
+        text(
+            "INSERT INTO users "
+            "(id, email, hashed_password, full_name, is_active, is_verified, "
+            " role, organisation_id, created_at, updated_at) "
+            "VALUES "
+            "(:id, :email, :hashed_password, :full_name, true, false, "
+            " 'owner', :organisation_id, now(), now())"
+        ),
+        {
+            "id": user_id,
+            "email": email,
+            "hashed_password": hashed_pw,
+            "full_name": full_name,
+            "organisation_id": org_id,
+        }
+    )
+
+    await db.commit()
+
+    logger.info(f"[REGISTER-SIMPLE] Created user={user_id} org={org_id} email={email}")
+    return {"success": True, "email": email}
+
+
+@router.post("/login-simple")
+async def login_simple(
+    payload: dict,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Minimal login using raw SQL fetch + verify_password + JWT.
+    Body: {"email": "...", "password": "..."}
+    """
+    email = payload.get("email", "").strip().lower()
+    password = payload.get("password", "")
+
+    if not email or not password:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="email and password are required"
+        )
+
+    result = await db.execute(
+        text(
+            "SELECT id, email, hashed_password, full_name, is_active, role, organisation_id "
+            "FROM users WHERE email = :email"
+        ),
+        {"email": email}
+    )
+    row = result.fetchone()
+
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not row.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is disabled"
+        )
+
+    if not verify_password(password, row.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token_data = {"sub": str(row.id), "email": row.email}
+    if row.role:
+        token_data["role"] = row.role
+    if row.organisation_id:
+        token_data["org_id"] = str(row.organisation_id)
+
+    access_token = create_access_token(token_data)
+
+    logger.info(f"[LOGIN-SIMPLE] Successful login for email={email}")
+    return {"access_token": access_token, "token_type": "bearer"}
