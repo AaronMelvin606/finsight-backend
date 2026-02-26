@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.core.security import verify_password, get_password_hash
 from app.models.user import User
-from app.models.organisation import Organisation
+from app.models.organisation import Organisation, OrganisationMember
 from app.schemas.auth import UserRegister, TokenData
 
 logger = logging.getLogger(__name__)
@@ -109,17 +109,26 @@ async def create_user_with_organisation(
     db: AsyncSession,
     user_data: UserRegister
 ) -> User:
-    """Create a new user and their organisation."""
-    try:
-        # Determine organisation name
-        org_name = user_data.organisation_name or user_data.company_name or f"{user_data.full_name}'s Organisation"
-        logger.info(f"[AUTH_SERVICE] create_user_with_organisation: org_name={org_name}")
+    """
+    Create a new user, their organisation, and an owner membership record.
 
-        # Generate unique slug
+    Each step is individually instrumented so that Cloud Run logs will
+    show the exact step and exception that causes any failure.
+    """
+    logger.info(
+        f"[REGISTER] create_user_with_organisation START — email={user_data.email.lower()}"
+    )
+
+    # ── Step 0: derive org name and find a unique slug ────────────────────
+    try:
+        org_name = (
+            user_data.organisation_name
+            or user_data.company_name
+            or f"{user_data.full_name}'s Organisation"
+        )
         base_slug = generate_slug(org_name)
         slug = base_slug
         counter = 1
-
         while True:
             existing = await db.execute(
                 select(Organisation).where(Organisation.slug == slug)
@@ -128,54 +137,117 @@ async def create_user_with_organisation(
                 break
             slug = f"{base_slug}-{counter}"
             counter += 1
+        logger.info(
+            f"[REGISTER] Step 0 OK — org_name={org_name!r}, slug={slug!r}"
+        )
+    except Exception as exc:
+        logger.error(
+            f"[REGISTER] Step 0 FAILED (slug generation): "
+            f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+        )
+        raise
 
-        logger.info(f"[AUTH_SERVICE] Creating organisation with slug={slug}")
-
-        # Create organisation
+    # ── Step 1: create Organisation, flush to obtain PK ───────────────────
+    try:
         organisation = Organisation(
             name=org_name,
             slug=slug,
             subscription_tier="essentials",
             subscription_status="trial",
-            settings={}
+            settings={},
         )
         db.add(organisation)
-        await db.flush()  # Get the organisation ID
-        logger.info(f"[AUTH_SERVICE] Organisation flushed: id={organisation.id}")
+        await db.flush()
+        logger.info(
+            f"[REGISTER] Step 1 OK — Organisation flushed: id={organisation.id}"
+        )
+    except Exception as exc:
+        logger.error(
+            f"[REGISTER] Step 1 FAILED (create Organisation): "
+            f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+        )
+        raise
 
-        # Create user as owner of the organisation
+    # ── Step 2: create User, flush to obtain PK ───────────────────────────
+    try:
+        hashed_pw = get_password_hash(user_data.password)
         user = User(
             email=user_data.email.lower(),
-            hashed_password=get_password_hash(user_data.password),
+            hashed_password=hashed_pw,
             full_name=user_data.full_name,
             job_title=user_data.job_title,
             organisation_id=organisation.id,
             role="owner",
             is_active=True,
-            is_verified=False
+            is_verified=False,
         )
         db.add(user)
-        logger.info("[AUTH_SERVICE] User added to session, committing")
-        await db.commit()
-        logger.info("[AUTH_SERVICE] Committed, re-querying user with organisation")
+        await db.flush()
+        logger.info(f"[REGISTER] Step 2 OK — User flushed: id={user.id}")
+    except Exception as exc:
+        logger.error(
+            f"[REGISTER] Step 2 FAILED (create User): "
+            f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+        )
+        raise
 
-        # Re-query with selectinload — the reliable way to eager-load a
-        # relationship on an async session after a commit.  Using
-        # db.refresh(user, ["organisation"]) is unreliable for lazy
-        # relationships in async context and can raise MissingGreenlet.
+    # ── Step 3: create OrganisationMember record, flush ───────────────────
+    try:
+        member = OrganisationMember(
+            organisation_id=organisation.id,
+            user_id=user.id,
+            role="owner",
+        )
+        db.add(member)
+        await db.flush()
+        logger.info(
+            f"[REGISTER] Step 3 OK — OrganisationMember flushed: id={member.id}"
+        )
+    except Exception as exc:
+        logger.error(
+            f"[REGISTER] Step 3 FAILED (create OrganisationMember): "
+            f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+        )
+        raise
+
+    # ── Step 4: commit the transaction ────────────────────────────────────
+    try:
+        await db.commit()
+        logger.info("[REGISTER] Step 4 OK — transaction committed")
+    except Exception as exc:
+        logger.error(
+            f"[REGISTER] Step 4 FAILED (commit): "
+            f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+        )
+        raise
+
+    # ── Step 5: re-query user with organisation eager-loaded ──────────────
+    # After commit all ORM attributes are expired; use a fresh SELECT with
+    # selectinload so the organisation relationship is populated without any
+    # lazy-load (which would raise MissingGreenlet in async context).
+    try:
         result = await db.execute(
             select(User)
             .options(selectinload(User.organisation))
             .where(User.id == user.id)
         )
         user = result.scalar_one()
-        logger.info(f"[AUTH_SERVICE] User created successfully: id={user.id}")
-
-        return user
-    except Exception as e:
-        logger.error(f"[AUTH_SERVICE] create_user_with_organisation FAILED: {type(e).__name__}: {e}")
-        logger.error(f"[AUTH_SERVICE] Full traceback:\n{traceback.format_exc()}")
+        logger.info(
+            f"[REGISTER] Step 5 OK — User re-queried: id={user.id}, "
+            f"organisation_id={user.organisation_id}, "
+            f"organisation_loaded={user.organisation is not None}"
+        )
+    except Exception as exc:
+        logger.error(
+            f"[REGISTER] Step 5 FAILED (re-query user): "
+            f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+        )
         raise
+
+    logger.info(
+        f"[REGISTER] create_user_with_organisation COMPLETE — user.id={user.id}"
+    )
+    return user
 
 
 def create_tokens_for_user(user: User) -> dict:
