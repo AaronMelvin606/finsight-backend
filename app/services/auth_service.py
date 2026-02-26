@@ -157,11 +157,18 @@ async def create_user_with_organisation(
         db.add(user)
         logger.info("[AUTH_SERVICE] User added to session, committing")
         await db.commit()
-        logger.info("[AUTH_SERVICE] Committed, refreshing user")
-        await db.refresh(user)
+        logger.info("[AUTH_SERVICE] Committed, re-querying user with organisation")
 
-        # Load the organisation relationship
-        await db.refresh(user, ["organisation"])
+        # Re-query with selectinload — the reliable way to eager-load a
+        # relationship on an async session after a commit.  Using
+        # db.refresh(user, ["organisation"]) is unreliable for lazy
+        # relationships in async context and can raise MissingGreenlet.
+        result = await db.execute(
+            select(User)
+            .options(selectinload(User.organisation))
+            .where(User.id == user.id)
+        )
+        user = result.scalar_one()
         logger.info(f"[AUTH_SERVICE] User created successfully: id={user.id}")
 
         return user
