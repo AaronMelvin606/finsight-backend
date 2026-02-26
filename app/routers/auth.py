@@ -427,7 +427,7 @@ async def register_simple(
             "(id, name, slug, subscription_tier, subscription_status, "
             " max_users, settings, is_active, created_at, updated_at) "
             "VALUES "
-            "(:id, :name, :slug, 'trial', 'trial', 3, '{}', true, now(), now())"
+            "(:id, :name, :slug, 'essentials', 'trial', 3, '{}', true, now(), now())"
         ),
         {"id": org_id, "name": organisation_name, "slug": slug}
     )
