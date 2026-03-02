@@ -299,13 +299,39 @@ async def _sync_chart_of_accounts(
 
 @router.get("/connect")
 async def xero_connect(
-    current_user=Depends(get_current_user),
+    request: Request,
+    token: str = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Initiate Xero OAuth 2.0 Authorization Code flow.
+    Accepts JWT via Authorization header OR ?token= query parameter (dev mode).
     Redirects user to Xero login page.
     """
-    org_id = _get_org_id(current_user)
+    from app.core.security import decode_token as _decode
+
+    # Try header first, fall back to query param
+    auth_header = request.headers.get("authorization", "")
+    jwt_token = None
+
+    if auth_header.startswith("Bearer "):
+        jwt_token = auth_header.split(" ", 1)[1]
+    elif token:
+        jwt_token = token
+
+    if not jwt_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Provide JWT via Authorization header or ?token= parameter"
+        )
+
+    payload = _decode(jwt_token)
+    org_id = payload.get("org_id")
+    if not org_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No org_id in token"
+        )
 
     if not XERO_CLIENT_ID or not XERO_REDIRECT_URI:
         raise HTTPException(
@@ -522,7 +548,6 @@ async def xero_sync(
 
         if pl_resp.status_code == 200:
             pl_data = pl_resp.json()
-            # Get date range from report
             reports = pl_data.get("Reports", [])
             report_titles = reports[0].get("ReportTitles", []) if reports else []
 
@@ -537,7 +562,7 @@ async def xero_sync(
                 {
                     "id": str(uuid.uuid4()),
                     "org_id": org_id,
-                    "start": None,  # Xero report covers configurable range
+                    "start": None,
                     "end": None,
                     "data": json.dumps(pl_data),
                     "fetched": now,
