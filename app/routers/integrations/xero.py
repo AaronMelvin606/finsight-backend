@@ -4,14 +4,15 @@ FinSight AI - Xero Integration Router
 OAuth 2.0 connection, data sync, Chart of Accounts auto-mapping.
 Uses raw SQL pattern consistent with existing *-simple endpoints.
 
-v2.3: Includes account_mappings auto-population on sync.
+v2.4: Fixed P&L sync with explicit date params, added INVENTORY mapping,
+      improved error logging with response body capture.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 import httpx
 import uuid
 import logging
@@ -69,6 +70,7 @@ XERO_TYPE_MAPPING = {
     "PREPAYMENT":     {"category": "CURRENT_ASSET",        "sign": 1,  "pnl": False, "bs": True},
     "SALES":          {"category": "REVENUE",              "sign": 1,  "pnl": True,  "bs": False},
     "DEPRECIATN":     {"category": "OPEX",                 "sign": -1, "pnl": True,  "bs": False},
+    "INVENTORY":      {"category": "CURRENT_ASSET",        "sign": 1,  "pnl": False, "bs": True},
     "PAYGLIABILITY":  {"category": "CURRENT_LIABILITY",    "sign": -1, "pnl": False, "bs": True},
     "SUPERANNUATIONEXPENSE": {"category": "OPEX",          "sign": -1, "pnl": True,  "bs": False},
     "SUPERANNUATIONLIABILITY": {"category": "CURRENT_LIABILITY", "sign": -1, "pnl": False, "bs": True},
@@ -521,6 +523,9 @@ async def xero_sync(
     Sync financial data from Xero: P&L, Balance Sheet, and Chart of Accounts.
     Stores reports as JSONB in financial_data table.
     Syncs Chart of Accounts into account_mappings with auto-mapping.
+
+    P&L is fetched for the current financial year (Jan 1 to today).
+    Balance Sheet is fetched as at today's date.
     """
     org_id = _get_org_id(current_user)
 
@@ -530,10 +535,16 @@ async def xero_sync(
     tenant_id = creds["xero_tenant_id"]
 
     reports_synced = []
+    errors = []
     now = datetime.now(timezone.utc)
+    today = date.today()
+
+    # Calculate current financial year start (assume Jan 1 for now)
+    fy_start = date(today.year, 1, 1)
 
     # --- Sync P&L Report ---
     try:
+        logger.info(f"[XERO] Fetching P&L for org={org_id}, from={fy_start} to={today}")
         async with httpx.AsyncClient() as client:
             pl_resp = await client.get(
                 f"{XERO_API_BASE}/Reports/ProfitAndLoss",
@@ -542,14 +553,17 @@ async def xero_sync(
                     "Xero-Tenant-Id": tenant_id,
                     "Accept": "application/json",
                 },
-                params={"periods": "12", "timeframe": "MONTH"},
+                params={
+                    "fromDate": fy_start.isoformat(),
+                    "toDate": today.isoformat(),
+                },
                 timeout=30.0,
             )
 
+        logger.info(f"[XERO] P&L response status: {pl_resp.status_code}")
+
         if pl_resp.status_code == 200:
             pl_data = pl_resp.json()
-            reports = pl_data.get("Reports", [])
-            report_titles = reports[0].get("ReportTitles", []) if reports else []
 
             await db.execute(
                 text(
@@ -562,8 +576,8 @@ async def xero_sync(
                 {
                     "id": str(uuid.uuid4()),
                     "org_id": org_id,
-                    "start": None,
-                    "end": None,
+                    "start": fy_start,
+                    "end": today,
                     "data": json.dumps(pl_data),
                     "fetched": now,
                 }
@@ -571,12 +585,16 @@ async def xero_sync(
             reports_synced.append("ProfitAndLoss")
             logger.info(f"[XERO] P&L synced for org={org_id}")
         else:
-            logger.error(f"[XERO] P&L fetch failed: {pl_resp.status_code}")
+            error_body = pl_resp.text[:500]
+            logger.error(f"[XERO] P&L fetch failed: {pl_resp.status_code} - {error_body}")
+            errors.append(f"P&L: HTTP {pl_resp.status_code}")
     except Exception as e:
-        logger.error(f"[XERO] P&L sync error: {e}")
+        logger.error(f"[XERO] P&L sync error: {type(e).__name__}: {e}")
+        errors.append(f"P&L: {type(e).__name__}: {e}")
 
     # --- Sync Balance Sheet Report ---
     try:
+        logger.info(f"[XERO] Fetching Balance Sheet for org={org_id}, date={today}")
         async with httpx.AsyncClient() as client:
             bs_resp = await client.get(
                 f"{XERO_API_BASE}/Reports/BalanceSheet",
@@ -585,8 +603,13 @@ async def xero_sync(
                     "Xero-Tenant-Id": tenant_id,
                     "Accept": "application/json",
                 },
+                params={
+                    "date": today.isoformat(),
+                },
                 timeout=30.0,
             )
+
+        logger.info(f"[XERO] Balance Sheet response status: {bs_resp.status_code}")
 
         if bs_resp.status_code == 200:
             bs_data = bs_resp.json()
@@ -602,8 +625,8 @@ async def xero_sync(
                 {
                     "id": str(uuid.uuid4()),
                     "org_id": org_id,
-                    "start": None,
-                    "end": None,
+                    "start": today,
+                    "end": today,
                     "data": json.dumps(bs_data),
                     "fetched": now,
                 }
@@ -611,9 +634,12 @@ async def xero_sync(
             reports_synced.append("BalanceSheet")
             logger.info(f"[XERO] Balance Sheet synced for org={org_id}")
         else:
-            logger.error(f"[XERO] Balance Sheet fetch failed: {bs_resp.status_code}")
+            error_body = bs_resp.text[:500]
+            logger.error(f"[XERO] Balance Sheet fetch failed: {bs_resp.status_code} - {error_body}")
+            errors.append(f"BalanceSheet: HTTP {bs_resp.status_code}")
     except Exception as e:
-        logger.error(f"[XERO] Balance Sheet sync error: {e}")
+        logger.error(f"[XERO] Balance Sheet sync error: {type(e).__name__}: {e}")
+        errors.append(f"BalanceSheet: {type(e).__name__}: {e}")
 
     # --- Sync Chart of Accounts into account_mappings ---
     coa_stats = await _sync_chart_of_accounts(db, org_id, access_token, tenant_id)
@@ -630,7 +656,7 @@ async def xero_sync(
 
     mapping_complete = coa_stats["unmapped"] == 0
 
-    return {
+    result = {
         "success": True,
         "reports_synced": reports_synced,
         "synced_at": now.isoformat(),
@@ -639,6 +665,12 @@ async def xero_sync(
         "accounts_unmapped": coa_stats["unmapped"],
         "mapping_complete": mapping_complete,
     }
+
+    # Include errors in response if any occurred
+    if errors:
+        result["errors"] = errors
+
+    return result
 
 
 @router.delete("/disconnect")
