@@ -1,14 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import text
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 from typing import Optional
 from datetime import date
-from dependencies import get_db, get_current_user
+
+from app.core.database import AsyncSessionLocal
+from app.api.deps import get_current_user
 
 router = APIRouter()
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
+async def get_db():
+    async with AsyncSessionLocal() as session:
+        yield session
+
 
 @router.get("/reports/budget-vs-actual")
 async def budget_vs_actual(
@@ -17,18 +22,7 @@ async def budget_vs_actual(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """
-    Core report: Budget vs Actual by account code and reporting category.
-
-    Joins:
-      - budgets           → budget amounts per account per period
-      - financial_data    → actuals synced from Xero
-      - account_mappings  → reporting_category labels
-
-    Returns variance (actual - budget) and variance % for each account.
-    """
     org_id = current_user["organisation_id"]
-
     result = await db.execute(
         text("""
             SELECT
@@ -45,8 +39,7 @@ async def budget_vs_actual(
                     ELSE ROUND(
                         (COALESCE(SUM(fd.net_amount), 0)
                          - COALESCE(SUM(b.amount), 0))
-                        / ABS(SUM(b.amount)) * 100,
-                    1)
+                        / ABS(SUM(b.amount)) * 100, 1)
                 END                                               AS variance_pct
             FROM budgets b
             FULL OUTER JOIN financial_data fd
@@ -68,22 +61,12 @@ async def budget_vs_actual(
                 COALESCE(am.account_name, fd.account_name, ''),
                 COALESCE(am.reporting_category, 'Unmapped'),
                 COALESCE(am.reporting_subcategory, '')
-            ORDER BY
-                reporting_category,
-                account_code
+            ORDER BY reporting_category, account_code
         """),
-        {
-            "org_id": org_id,
-            "period_start": period_start,
-            "period_end": period_end,
-        },
+        {"org_id": org_id, "period_start": period_start, "period_end": period_end},
     )
     rows = result.mappings().all()
-    return {
-        "period_start": str(period_start),
-        "period_end": str(period_end),
-        "rows": [dict(r) for r in rows],
-    }
+    return {"period_start": str(period_start), "period_end": str(period_end), "rows": [dict(r) for r in rows]}
 
 
 @router.get("/reports/budget-vs-actual/summary")
@@ -93,12 +76,7 @@ async def budget_vs_actual_summary(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """
-    Summarised Budget vs Actual rolled up to reporting_category level.
-    Ideal for the executive summary dashboard header cards.
-    """
     org_id = current_user["organisation_id"]
-
     result = await db.execute(
         text("""
             SELECT
@@ -112,8 +90,7 @@ async def budget_vs_actual_summary(
                     ELSE ROUND(
                         (COALESCE(SUM(fd.net_amount), 0)
                          - COALESCE(SUM(b.amount), 0))
-                        / ABS(SUM(b.amount)) * 100,
-                    1)
+                        / ABS(SUM(b.amount)) * 100, 1)
                 END                                          AS variance_pct
             FROM budgets b
             FULL OUTER JOIN financial_data fd
@@ -133,18 +110,10 @@ async def budget_vs_actual_summary(
             GROUP BY COALESCE(am.reporting_category, 'Unmapped')
             ORDER BY reporting_category
         """),
-        {
-            "org_id": org_id,
-            "period_start": period_start,
-            "period_end": period_end,
-        },
+        {"org_id": org_id, "period_start": period_start, "period_end": period_end},
     )
     rows = result.mappings().all()
-    return {
-        "period_start": str(period_start),
-        "period_end": str(period_end),
-        "summary": [dict(r) for r in rows],
-    }
+    return {"period_start": str(period_start), "period_end": str(period_end), "summary": [dict(r) for r in rows]}
 
 
 @router.get("/reports/actuals")
@@ -155,12 +124,7 @@ async def actuals(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """
-    Return actuals from financial_data with mapping labels applied.
-    Optionally filter by reporting_category (e.g. 'Revenue', 'Operating Expenses').
-    """
     org_id = current_user["organisation_id"]
-
     query = """
         SELECT
             fd.account_code,
@@ -179,25 +143,14 @@ async def actuals(
           AND fd.period_start   >= :period_start
           AND fd.period_end     <= :period_end
     """
-    params: dict = {
-        "org_id": org_id,
-        "period_start": period_start,
-        "period_end": period_end,
-    }
-
+    params: dict = {"org_id": org_id, "period_start": period_start, "period_end": period_end}
     if reporting_category:
         query += " AND COALESCE(am.reporting_category, 'Unmapped') = :reporting_category"
         params["reporting_category"] = reporting_category
-
     query += " ORDER BY fd.period_start, am.reporting_category, fd.account_code"
-
     result = await db.execute(text(query), params)
     rows = result.mappings().all()
-    return {
-        "period_start": str(period_start),
-        "period_end": str(period_end),
-        "rows": [dict(r) for r in rows],
-    }
+    return {"period_start": str(period_start), "period_end": str(period_end), "rows": [dict(r) for r in rows]}
 
 
 @router.get("/reports/trend")
@@ -207,12 +160,7 @@ async def monthly_trend(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """
-    Monthly trend: Budget vs Actual rolled up by reporting_category per month.
-    Feeds the time-series chart in the Budget vs Actual dashboard.
-    """
     org_id = current_user["organisation_id"]
-
     result = await db.execute(
         text("""
             SELECT
@@ -242,15 +190,7 @@ async def monthly_trend(
                 COALESCE(am.reporting_category, 'Unmapped')
             ORDER BY month, reporting_category
         """),
-        {
-            "org_id": org_id,
-            "period_start": period_start,
-            "period_end": period_end,
-        },
+        {"org_id": org_id, "period_start": period_start, "period_end": period_end},
     )
     rows = result.mappings().all()
-    return {
-        "period_start": str(period_start),
-        "period_end": str(period_end),
-        "trend": [dict(r) for r in rows],
-    }
+    return {"period_start": str(period_start), "period_end": str(period_end), "trend": [dict(r) for r in rows]}
