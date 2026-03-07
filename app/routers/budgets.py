@@ -1,44 +1,55 @@
+"""
+FinSight AI - Budgets Router (Workstream 3)
+============================================
+Budget CRUD endpoints.
+Fixed to use User ORM object and correct budgets table columns.
+"""
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from pydantic import BaseModel
 from typing import Optional
 from datetime import date
+import io
+import csv
 
-from app.core.database import AsyncSessionLocal
+from app.core.database import get_db
 from app.api.deps import get_current_user
+from app.models.user import User
 
 router = APIRouter()
 
 
-async def get_db():
-    async with AsyncSessionLocal() as session:
-        yield session
-
-
 class BudgetEntry(BaseModel):
     account_code: str
+    account_name: str
     period_start: date
     period_end: date
     amount: float
-    notes: Optional[str] = ""
+    budget_name: Optional[str] = "Default Budget"
 
 
 class BudgetUpdate(BaseModel):
     amount: float
-    notes: Optional[str] = None
 
+
+# ──────────────────────────────────────────────────────────────────────
+# LIST BUDGETS
+# ──────────────────────────────────────────────────────────────────────
 
 @router.get("/budgets")
 async def list_budgets(
     period_start: Optional[date] = None,
     period_end: Optional[date] = None,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    org_id = current_user["organisation_id"]
+    org_id = str(current_user.organisation_id)
     query = """
-        SELECT id, account_code, period_start, period_end, amount, notes,
+        SELECT id, budget_name, account_code, account_name,
+               period_start, period_end, amount,
                created_at, updated_at
         FROM budgets
         WHERE organisation_id = :org_id
@@ -56,33 +67,35 @@ async def list_budgets(
     return {"budgets": [dict(r) for r in rows]}
 
 
+# ──────────────────────────────────────────────────────────────────────
+# CREATE BUDGET
+# ──────────────────────────────────────────────────────────────────────
+
 @router.post("/budgets", status_code=201)
 async def create_budget(
     payload: BudgetEntry,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    org_id = current_user["organisation_id"]
+    org_id = str(current_user.organisation_id)
     result = await db.execute(
         text("""
             INSERT INTO budgets
-                (organisation_id, account_code, period_start, period_end, amount, notes)
+                (organisation_id, budget_name, account_code, account_name,
+                 period_start, period_end, amount)
             VALUES
-                (:org_id, :account_code, :period_start, :period_end, :amount, :notes)
-            ON CONFLICT (organisation_id, account_code, period_start, period_end)
-            DO UPDATE SET
-                amount     = EXCLUDED.amount,
-                notes      = EXCLUDED.notes,
-                updated_at = now()
+                (:org_id, :budget_name, :account_code, :account_name,
+                 :period_start, :period_end, :amount)
             RETURNING id
         """),
         {
             "org_id": org_id,
+            "budget_name": payload.budget_name,
             "account_code": payload.account_code,
+            "account_name": payload.account_name,
             "period_start": payload.period_start,
             "period_end": payload.period_end,
             "amount": payload.amount,
-            "notes": payload.notes,
         },
     )
     await db.commit()
@@ -90,13 +103,17 @@ async def create_budget(
     return {"message": "Budget entry saved", "id": str(row[0])}
 
 
+# ──────────────────────────────────────────────────────────────────────
+# BULK CREATE BUDGETS
+# ──────────────────────────────────────────────────────────────────────
+
 @router.post("/budgets/bulk", status_code=201)
 async def bulk_create_budgets(
     payload: list[BudgetEntry],
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    org_id = current_user["organisation_id"]
+    org_id = str(current_user.organisation_id)
     if not payload:
         raise HTTPException(status_code=400, detail="No budget entries provided")
     count = 0
@@ -104,22 +121,20 @@ async def bulk_create_budgets(
         await db.execute(
             text("""
                 INSERT INTO budgets
-                    (organisation_id, account_code, period_start, period_end, amount, notes)
+                    (organisation_id, budget_name, account_code, account_name,
+                     period_start, period_end, amount)
                 VALUES
-                    (:org_id, :account_code, :period_start, :period_end, :amount, :notes)
-                ON CONFLICT (organisation_id, account_code, period_start, period_end)
-                DO UPDATE SET
-                    amount     = EXCLUDED.amount,
-                    notes      = EXCLUDED.notes,
-                    updated_at = now()
+                    (:org_id, :budget_name, :account_code, :account_name,
+                     :period_start, :period_end, :amount)
             """),
             {
                 "org_id": org_id,
+                "budget_name": entry.budget_name,
                 "account_code": entry.account_code,
+                "account_name": entry.account_name,
                 "period_start": entry.period_start,
                 "period_end": entry.period_end,
                 "amount": entry.amount,
-                "notes": entry.notes,
             },
         )
         count += 1
@@ -127,28 +142,27 @@ async def bulk_create_budgets(
     return {"message": f"{count} budget entries saved"}
 
 
+# ──────────────────────────────────────────────────────────────────────
+# UPDATE BUDGET
+# ──────────────────────────────────────────────────────────────────────
+
 @router.patch("/budgets/{budget_id}")
 async def update_budget(
     budget_id: str,
     payload: BudgetUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    org_id = current_user["organisation_id"]
-    set_clauses = ["amount = :amount", "updated_at = now()"]
-    params: dict = {"org_id": org_id, "budget_id": budget_id, "amount": payload.amount}
-    if payload.notes is not None:
-        set_clauses.append("notes = :notes")
-        params["notes"] = payload.notes
+    org_id = str(current_user.organisation_id)
     result = await db.execute(
-        text(f"""
+        text("""
             UPDATE budgets
-            SET {', '.join(set_clauses)}
+            SET amount = :amount, updated_at = now()
             WHERE id = :budget_id
               AND organisation_id = :org_id
             RETURNING id
         """),
-        params,
+        {"org_id": org_id, "budget_id": budget_id, "amount": payload.amount},
     )
     await db.commit()
     row = result.fetchone()
@@ -157,13 +171,17 @@ async def update_budget(
     return {"message": "Budget entry updated", "id": budget_id}
 
 
+# ──────────────────────────────────────────────────────────────────────
+# DELETE BUDGET
+# ──────────────────────────────────────────────────────────────────────
+
 @router.delete("/budgets/{budget_id}", status_code=200)
 async def delete_budget(
     budget_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    org_id = current_user["organisation_id"]
+    org_id = str(current_user.organisation_id)
     result = await db.execute(
         text("""
             DELETE FROM budgets
@@ -180,12 +198,16 @@ async def delete_budget(
     return {"message": "Budget entry deleted"}
 
 
+# ──────────────────────────────────────────────────────────────────────
+# LIST BUDGET PERIODS
+# ──────────────────────────────────────────────────────────────────────
+
 @router.get("/budgets/periods")
 async def list_budget_periods(
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    org_id = current_user["organisation_id"]
+    org_id = str(current_user.organisation_id)
     result = await db.execute(
         text("""
             SELECT DISTINCT period_start, period_end
@@ -197,3 +219,74 @@ async def list_budget_periods(
     )
     rows = result.mappings().all()
     return {"periods": [dict(r) for r in rows]}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BUDGET TEMPLATE (CSV download)
+# ──────────────────────────────────────────────────────────────────────
+
+@router.get("/budgets/template")
+async def budget_template(
+    period_start: date,
+    period_end: date,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns a CSV template pre-populated with the client's mapped P&L account codes.
+    One row per account per month in the period range.
+    The amount column is blank for the user to fill in.
+    """
+    org_id = str(current_user.organisation_id)
+
+    # Get mapped P&L accounts
+    result = await db.execute(
+        text("""
+            SELECT account_code, account_name, reporting_category
+            FROM account_mappings
+            WHERE organisation_id = :org_id
+              AND include_in_pnl = TRUE
+              AND is_mapped = TRUE
+            ORDER BY reporting_category, account_code
+        """),
+        {"org_id": org_id},
+    )
+    accounts = result.mappings().all()
+
+    if not accounts:
+        raise HTTPException(status_code=404, detail="No mapped P&L accounts found")
+
+    # Generate monthly periods
+    from dateutil.relativedelta import relativedelta
+    periods = []
+    current = period_start.replace(day=1)
+    while current <= period_end:
+        month_end = (current + relativedelta(months=1)) - relativedelta(days=1)
+        if month_end > period_end:
+            month_end = period_end
+        periods.append((current, month_end))
+        current = current + relativedelta(months=1)
+
+    # Build CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["account_code", "account_name", "reporting_category",
+                     "period_start", "period_end", "amount"])
+
+    for account in accounts:
+        for p_start, p_end in periods:
+            writer.writerow([
+                account["account_code"],
+                account["account_name"],
+                account["reporting_category"],
+                str(p_start),
+                str(p_end),
+                "",  # blank for user to fill in
+            ])
+
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=finsight_budget_template.csv"},
+    )
