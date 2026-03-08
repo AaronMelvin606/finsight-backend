@@ -197,6 +197,12 @@ async def _sync_chart_of_accounts(
     Applies auto-mapping rules for known Xero account types.
     Returns { total, mapped, unmapped }.
     """
+    # Clear any aborted transaction from previous operations
+    try:
+        await db.rollback()
+    except Exception:
+        pass
+
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"{XERO_API_BASE}/Accounts",
