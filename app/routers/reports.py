@@ -6,12 +6,11 @@ Queries financial_line_items (normalised) joined to account_mappings and budgets
 All financial calculations performed server-side.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from typing import Optional
 from datetime import date
-from uuid import UUID
 
 from app.core.database import get_db
 from app.api.deps import get_current_user
@@ -43,8 +42,8 @@ async def actual_vs_budget(
                 am.reporting_category,
                 am.account_code,
                 am.account_name,
-                COALESCE(fli.net_amount, 0)         AS actual,
-                COALESCE(b_agg.total_budget, 0)     AS budget,
+                COALESCE(fli.net_amount, 0)           AS actual,
+                COALESCE(b_agg.total_budget, 0)       AS budget,
                 COALESCE(fli.net_amount, 0)
                     - COALESCE(b_agg.total_budget, 0) AS variance,
                 CASE
@@ -79,6 +78,7 @@ async def actual_vs_budget(
         {"org_id": org_id, "period_start": period_start, "period_end": period_end},
     )
     rows = result.mappings().all()
+
     return {
         "period_start": str(period_start),
         "period_end": str(period_end),
@@ -107,8 +107,8 @@ async def avb_kpis(
         text("""
             SELECT
                 am.reporting_category,
-                COALESCE(SUM(fli.net_amount), 0)    AS actual,
-                COALESCE(SUM(b_agg.total_budget), 0) AS budget
+                COALESCE(SUM(fli.net_amount), 0)      AS actual,
+                COALESCE(SUM(b_agg.total_budget), 0)  AS budget
             FROM account_mappings am
             LEFT JOIN financial_line_items fli
                 ON  fli.organisation_id = am.organisation_id
@@ -151,12 +151,14 @@ async def avb_kpis(
     gm_pct_actual = (gm_actual / rev_actual * 100) if rev_actual != 0 else 0
     gm_pct_budget = (gm_budget / rev_budget * 100) if rev_budget != 0 else 0
 
-    # Count months in period for monthly OpEx
-    months_in_period = max(1, (period_end.year - period_start.year) * 12 + period_end.month - period_start.month + 1)
+    months_in_period = max(
+        1,
+        (period_end.year - period_start.year) * 12 + period_end.month - period_start.month + 1
+    )
     monthly_opex_actual = opex_actual / months_in_period
     monthly_opex_budget = opex_budget / months_in_period
 
-    def safe_var_pct(actual_val, budget_val):
+    def safe_var_pct(actual_val: float, budget_val: float):
         if budget_val == 0:
             return None
         return round((actual_val - budget_val) / abs(budget_val) * 100, 1)
@@ -213,8 +215,8 @@ async def avb_bridge(
         text("""
             SELECT
                 am.reporting_category,
-                COALESCE(SUM(fli.net_amount), 0)    AS actual,
-                COALESCE(SUM(b_agg.total_budget), 0) AS budget
+                COALESCE(SUM(fli.net_amount), 0)      AS actual,
+                COALESCE(SUM(b_agg.total_budget), 0)  AS budget
             FROM account_mappings am
             LEFT JOIN financial_line_items fli
                 ON  fli.organisation_id = am.organisation_id
@@ -288,8 +290,8 @@ async def avb_summary(
         text("""
             SELECT
                 am.reporting_category,
-                COALESCE(SUM(fli.net_amount), 0)    AS actual,
-                COALESCE(SUM(b_agg.total_budget), 0) AS budget,
+                COALESCE(SUM(fli.net_amount), 0)      AS actual,
+                COALESCE(SUM(b_agg.total_budget), 0)  AS budget,
                 COALESCE(SUM(fli.net_amount), 0)
                     - COALESCE(SUM(b_agg.total_budget), 0) AS variance,
                 CASE
@@ -325,6 +327,7 @@ async def avb_summary(
         {"org_id": org_id, "period_start": period_start, "period_end": period_end},
     )
     rows = result.mappings().all()
+
     return {
         "period_start": str(period_start),
         "period_end": str(period_end),
@@ -349,12 +352,12 @@ async def monthly_trend(
     result = await db.execute(
         text("""
             SELECT
-                fli.period_start                        AS month,
+                fli.period_start                          AS month,
                 am.reporting_category,
-                COALESCE(SUM(fli.net_amount), 0)        AS actual,
-                COALESCE(SUM(b.amount), 0)              AS budget,
+                COALESCE(SUM(fli.net_amount), 0)         AS actual,
+                COALESCE(SUM(b.amount), 0)               AS budget,
                 COALESCE(SUM(fli.net_amount), 0)
-                    - COALESCE(SUM(b.amount), 0)        AS variance
+                    - COALESCE(SUM(b.amount), 0)         AS variance
             FROM financial_line_items fli
             JOIN account_mappings am
                 ON  am.organisation_id = fli.organisation_id
@@ -375,6 +378,7 @@ async def monthly_trend(
         {"org_id": org_id, "period_start": period_start, "period_end": period_end},
     )
     rows = result.mappings().all()
+
     return {
         "period_start": str(period_start),
         "period_end": str(period_end),
@@ -414,7 +418,11 @@ async def actuals(
           AND fli.period_start   >= :period_start
           AND fli.period_end     <= :period_end
     """
-    params: dict = {"org_id": org_id, "period_start": period_start, "period_end": period_end}
+    params: dict = {
+        "org_id": org_id,
+        "period_start": period_start,
+        "period_end": period_end,
+    }
 
     if reporting_category:
         query += " AND am.reporting_category = :reporting_category"
@@ -424,6 +432,7 @@ async def actuals(
 
     result = await db.execute(text(query), params)
     rows = result.mappings().all()
+
     return {
         "period_start": str(period_start),
         "period_end": str(period_end),
@@ -443,6 +452,7 @@ async def data_health(
     """
     Data health summary for the Data Health dashboard page.
     Returns mapping coverage, budget coverage, and data completeness.
+    Handles xero_connections schema differences safely.
     """
     org_id = str(current_user.organisation_id)
 
@@ -450,17 +460,19 @@ async def data_health(
     mapping_result = await db.execute(
         text("""
             SELECT
-                COUNT(*)                                          AS total,
-                COUNT(*) FILTER (WHERE is_mapped = TRUE)         AS mapped,
-                COUNT(*) FILTER (WHERE is_mapped = FALSE
-                    OR reporting_category IS NULL
-                    OR reporting_category = '')                   AS unmapped
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE is_mapped = TRUE) AS mapped,
+                COUNT(*) FILTER (
+                    WHERE is_mapped = FALSE
+                       OR reporting_category IS NULL
+                       OR reporting_category = ''
+                ) AS unmapped
             FROM account_mappings
             WHERE organisation_id = :org_id
         """),
         {"org_id": org_id},
     )
-    mapping_row = dict(mapping_result.mappings().fetchone())
+    mapping_row = dict(mapping_result.mappings().fetchone() or {})
 
     # Budget coverage
     budget_result = await db.execute(
@@ -478,7 +490,7 @@ async def data_health(
         """),
         {"org_id": org_id},
     )
-    budget_row = dict(budget_result.mappings().fetchone())
+    budget_row = dict(budget_result.mappings().fetchone() or {})
 
     # Data completeness
     period_result = await db.execute(
@@ -494,36 +506,127 @@ async def data_health(
         """),
         {"org_id": org_id},
     )
-    period_row = dict(period_result.mappings().fetchone())
+    period_row = dict(period_result.mappings().fetchone() or {})
 
     # Xero connection status
-    xero_result = await db.execute(
+    # Detect actual live schema instead of hardcoding columns like tenant_name
+    xero_columns_result = await db.execute(
         text("""
-            SELECT tenant_name, connected_at, token_expiry
-            FROM xero_connections
-            WHERE organisation_id = :org_id
-            ORDER BY connected_at DESC
-            LIMIT 1
-        """),
-        {"org_id": org_id},
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'xero_connections'
+        """)
     )
-    xero_row = xero_result.mappings().fetchone()
+    xero_columns = {row["column_name"] for row in xero_columns_result.mappings().all()}
+
+    name_candidates = [
+        "tenant_name",
+        "tenant_display_name",
+        "xero_tenant_name",
+        "organisation_name",
+        "company_name",
+        "name",
+    ]
+    connected_candidates = [
+        "connected_at",
+        "created_at",
+        "updated_at",
+        "last_synced_at",
+        "last_sync_at",
+    ]
+    expiry_candidates = [
+        "token_expiry",
+        "expires_at",
+        "access_token_expires_at",
+        "expiry_at",
+    ]
+    order_candidates = [
+        "connected_at",
+        "updated_at",
+        "created_at",
+        "last_synced_at",
+        "last_sync_at",
+    ]
+
+    name_col = next((c for c in name_candidates if c in xero_columns), None)
+    connected_col = next((c for c in connected_candidates if c in xero_columns), None)
+    expiry_col = next((c for c in expiry_candidates if c in xero_columns), None)
+    order_col = next((c for c in order_candidates if c in xero_columns), None)
+
     xero_status = None
-    if xero_row:
-        xero_status = {
-            "tenant_name": xero_row["tenant_name"],
-            "connected_at": str(xero_row["connected_at"]) if xero_row["connected_at"] else None,
-            "token_expiry": str(xero_row["token_expiry"]) if xero_row["token_expiry"] else None,
-        }
+
+    if xero_columns:
+        select_parts = []
+        if name_col:
+            select_parts.append(f"{name_col} AS tenant_name")
+        if connected_col:
+            select_parts.append(f"{connected_col} AS connected_at")
+        if expiry_col:
+            select_parts.append(f"{expiry_col} AS token_expiry")
+
+        # If no recognised columns exist, just return basic connected flag
+        if not select_parts:
+            xero_query = """
+                SELECT organisation_id
+                FROM xero_connections
+                WHERE organisation_id = :org_id
+                LIMIT 1
+            """
+            xero_result = await db.execute(text(xero_query), {"org_id": org_id})
+            xero_row = xero_result.mappings().fetchone()
+
+            if xero_row:
+                xero_status = {
+                    "tenant_name": None,
+                    "connected_at": None,
+                    "token_expiry": None,
+                    "connected": True,
+                }
+        else:
+            order_clause = f" ORDER BY {order_col} DESC" if order_col else ""
+            xero_query = f"""
+                SELECT {", ".join(select_parts)}
+                FROM xero_connections
+                WHERE organisation_id = :org_id
+                {order_clause}
+                LIMIT 1
+            """
+            xero_result = await db.execute(text(xero_query), {"org_id": org_id})
+            xero_row = xero_result.mappings().fetchone()
+
+            if xero_row:
+                xero_status = {
+                    "tenant_name": xero_row.get("tenant_name"),
+                    "connected_at": str(xero_row.get("connected_at")) if xero_row.get("connected_at") else None,
+                    "token_expiry": str(xero_row.get("token_expiry")) if xero_row.get("token_expiry") else None,
+                    "connected": True,
+                }
+
+    mapping_total = int(mapping_row.get("total") or 0)
+    mapping_mapped = int(mapping_row.get("mapped") or 0)
+    budget_pnl_accounts = int(budget_row.get("pnl_accounts") or 0)
+    budget_accounts_with_budget = int(budget_row.get("accounts_with_budget") or 0)
+
+    mapping_coverage_pct = round((mapping_mapped / mapping_total) * 100, 1) if mapping_total else 0.0
+    budget_coverage_pct = round((budget_accounts_with_budget / budget_pnl_accounts) * 100, 1) if budget_pnl_accounts else 0.0
 
     return {
-        "mapping": mapping_row,
-        "budget": budget_row,
+        "mapping": {
+            "total": mapping_total,
+            "mapped": mapping_mapped,
+            "unmapped": int(mapping_row.get("unmapped") or 0),
+            "coverage_pct": mapping_coverage_pct,
+        },
+        "budget": {
+            "pnl_accounts": budget_pnl_accounts,
+            "accounts_with_budget": budget_accounts_with_budget,
+            "coverage_pct": budget_coverage_pct,
+        },
         "data": {
-            "periods_with_data": period_row["periods_with_data"],
-            "earliest_period": str(period_row["earliest_period"]) if period_row["earliest_period"] else None,
-            "latest_period": str(period_row["latest_period"]) if period_row["latest_period"] else None,
-            "total_line_items": period_row["total_line_items"],
+            "periods_with_data": int(period_row.get("periods_with_data") or 0),
+            "earliest_period": str(period_row.get("earliest_period")) if period_row.get("earliest_period") else None,
+            "latest_period": str(period_row.get("latest_period")) if period_row.get("latest_period") else None,
+            "total_line_items": int(period_row.get("total_line_items") or 0),
         },
         "xero": xero_status,
     }
