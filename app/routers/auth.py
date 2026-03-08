@@ -137,7 +137,7 @@ async def login(
         )
 
     # Update last login timestamp
-    user.last_login_at = datetime.now(timezone.utc)
+    user.last_login_at = datetime.utcnow()
     await db.commit()
 
     # Create tokens
@@ -192,7 +192,7 @@ async def login_json(
         )
 
     # Update last login timestamp
-    user.last_login_at = datetime.now(timezone.utc)
+    user.last_login_at = datetime.utcnow()
     await db.commit()
 
     # Create tokens
