@@ -4,8 +4,9 @@ FinSight AI - Xero Integration Router
 OAuth 2.0 connection, data sync, Chart of Accounts auto-mapping.
 Uses raw SQL pattern consistent with existing *-simple endpoints.
 
-v2.4: Fixed P&L sync with explicit date params, added INVENTORY mapping,
-      improved error logging with response body capture.
+v2.5: Monthly P&L grain - fetches one report per calendar month,
+      parses JSONB into financial_line_items for proper BvA reporting.
+      Added backfill endpoint to repair existing stored JSONB.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -13,6 +14,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from datetime import datetime, timezone, timedelta, date
+from calendar import monthrange
 import httpx
 import uuid
 import logging
@@ -294,6 +296,210 @@ async def _sync_chart_of_accounts(
     return {"total": total, "mapped": mapped, "unmapped": unmapped}
 
 
+# ---------------------------------------------------------------------------
+# Helper: generate (period_start, period_end) tuples for each calendar month
+# ---------------------------------------------------------------------------
+def _months_in_range(from_date: date, to_date: date):
+    """Yield (first_of_month, last_of_month) for every month from_date..to_date."""
+    current = from_date.replace(day=1)
+    while current <= to_date:
+        last_day = monthrange(current.year, current.month)[1]
+        month_end = current.replace(day=last_day)
+        yield current, min(month_end, to_date)
+        # Advance to first of next month
+        if current.month == 12:
+            current = current.replace(year=current.year + 1, month=1, day=1)
+        else:
+            current = current.replace(month=current.month + 1, day=1)
+
+
+# ---------------------------------------------------------------------------
+# Helper: parse Xero P&L report JSON into flat account rows
+# ---------------------------------------------------------------------------
+def _parse_pnl_rows(report_json: dict) -> list[dict]:
+    """
+    Walk the nested Xero P&L Rows structure.
+    Returns list of dicts: {xero_account_id, account_name, net_amount}
+    Skips Header and SummaryRow rows.
+    """
+    rows = []
+    reports = report_json.get("Reports", [])
+    if not reports:
+        return rows
+
+    def _walk(row_list):
+        for row in row_list:
+            row_type = row.get("RowType", "")
+            if row_type in ("Header", "SummaryRow"):
+                continue
+            if row_type == "Section":
+                _walk(row.get("Rows", []))
+                continue
+            if row_type == "Row":
+                cells = row.get("Cells", [])
+                if len(cells) < 2:
+                    continue
+                account_cell = cells[0]
+                amount_cell = cells[-1]
+                account_name = account_cell.get("Value", "")
+                xero_account_id = None
+                for attr in account_cell.get("Attributes", []):
+                    if attr.get("Id") == "account":
+                        xero_account_id = attr.get("Value")
+                        break
+                try:
+                    net_amount = float(amount_cell.get("Value") or 0)
+                except (ValueError, TypeError):
+                    net_amount = 0.0
+                rows.append({
+                    "xero_account_id": xero_account_id,
+                    "account_name": account_name,
+                    "net_amount": net_amount,
+                })
+
+    _walk(reports[0].get("Rows", []))
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Helper: upsert parsed line items into financial_line_items
+# ---------------------------------------------------------------------------
+async def _upsert_line_items(
+    db: AsyncSession,
+    org_id: str,
+    period_start: date,
+    period_end: date,
+    line_items: list[dict],
+    fetched_at: datetime,
+) -> int:
+    """Insert/update rows in financial_line_items. Returns count upserted."""
+    count = 0
+    for item in line_items:
+        xero_account_id = item.get("xero_account_id")
+        if not xero_account_id:
+            continue  # Skip rows with no account ID (subtotals etc.)
+        await db.execute(
+            text(
+                "INSERT INTO financial_line_items "
+                "(id, organisation_id, xero_account_id, account_name, report_type, "
+                " period_start, period_end, net_amount, fetched_at) "
+                "VALUES (:id, :org_id, :xero_account_id, :account_name, 'ProfitAndLoss', "
+                " :period_start, :period_end, :net_amount, :fetched_at) "
+                "ON CONFLICT (organisation_id, xero_account_id, report_type, period_start, period_end) "
+                "DO UPDATE SET "
+                "  net_amount = EXCLUDED.net_amount, "
+                "  fetched_at = EXCLUDED.fetched_at"
+            ),
+            {
+                "id": str(uuid.uuid4()),
+                "org_id": org_id,
+                "xero_account_id": xero_account_id,
+                "account_name": item.get("account_name", ""),
+                "period_start": period_start,
+                "period_end": period_end,
+                "net_amount": item.get("net_amount", 0.0),
+                "fetched_at": fetched_at,
+            }
+        )
+        count += 1
+    await db.commit()
+    return count
+
+
+# ---------------------------------------------------------------------------
+# Helper: fetch one P&L per calendar month and populate financial_line_items
+# ---------------------------------------------------------------------------
+async def _sync_pnl_monthly(
+    db: AsyncSession,
+    org_id: str,
+    access_token: str,
+    tenant_id: str,
+    fy_start: date,
+    today: date,
+) -> dict:
+    """
+    Fetches Xero P&L month by month from fy_start to today.
+    Stores raw JSONB in financial_data and parsed rows in financial_line_items.
+    Returns { months_synced, line_items_upserted, errors }.
+    """
+    now = datetime.now(timezone.utc)
+    months_synced = 0
+    total_upserted = 0
+    errors = []
+
+    for period_start, period_end in _months_in_range(fy_start, today):
+        try:
+            logger.info(
+                f"[XERO] Fetching P&L month {period_start} -> {period_end} for org={org_id}"
+            )
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"{XERO_API_BASE}/Reports/ProfitAndLoss",
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Xero-Tenant-Id": tenant_id,
+                        "Accept": "application/json",
+                    },
+                    params={
+                        "fromDate": period_start.isoformat(),
+                        "toDate": period_end.isoformat(),
+                    },
+                    timeout=30.0,
+                )
+
+            if resp.status_code != 200:
+                errors.append(f"{period_start}: HTTP {resp.status_code}")
+                logger.error(
+                    f"[XERO] P&L fetch failed for {period_start}: {resp.status_code}"
+                )
+                continue
+
+            pl_data = resp.json()
+
+            # Store raw JSONB
+            await db.execute(
+                text(
+                    "INSERT INTO financial_data "
+                    "(id, organisation_id, report_type, period_start, period_end, data, fetched_at) "
+                    "VALUES (:id, :org_id, 'ProfitAndLoss', :start, :end, :data, :fetched) "
+                    "ON CONFLICT (organisation_id, report_type, period_start, period_end) "
+                    "DO UPDATE SET data = EXCLUDED.data, fetched_at = EXCLUDED.fetched_at"
+                ),
+                {
+                    "id": str(uuid.uuid4()),
+                    "org_id": org_id,
+                    "start": period_start,
+                    "end": period_end,
+                    "data": json.dumps(pl_data),
+                    "fetched": now,
+                }
+            )
+            await db.commit()
+
+            # Parse and upsert line items
+            line_items = _parse_pnl_rows(pl_data)
+            upserted = await _upsert_line_items(
+                db, org_id, period_start, period_end, line_items, now
+            )
+            total_upserted += upserted
+            months_synced += 1
+            logger.info(
+                f"[XERO] Month {period_start}: {upserted} line items upserted"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"[XERO] Monthly P&L sync error for {period_start}: {type(e).__name__}: {e}"
+            )
+            errors.append(f"{period_start}: {type(e).__name__}: {e}")
+
+    return {
+        "months_synced": months_synced,
+        "line_items_upserted": total_upserted,
+        "errors": errors,
+    }
+
+
 # ===================================================================
 # ENDPOINTS
 # ===================================================================
@@ -520,81 +726,36 @@ async def xero_sync(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Sync financial data from Xero: P&L, Balance Sheet, and Chart of Accounts.
-    Stores reports as JSONB in financial_data table.
-    Syncs Chart of Accounts into account_mappings with auto-mapping.
-
-    P&L is fetched for the current financial year (Jan 1 to today).
-    Balance Sheet is fetched as at today's date.
+    Sync financial data from Xero.
+    - Fetches P&L month-by-month for the current financial year
+    - Stores raw JSONB in financial_data
+    - Parses and upserts account-level rows into financial_line_items
+    - Syncs Balance Sheet (point-in-time, today)
+    - Syncs Chart of Accounts into account_mappings
     """
     org_id = _get_org_id(current_user)
 
-    # Refresh tokens if needed
     creds = await _refresh_tokens_if_needed(db, org_id)
     access_token = creds["access_token"]
     tenant_id = creds["xero_tenant_id"]
 
-    reports_synced = []
-    errors = []
     now = datetime.now(timezone.utc)
     today = date.today()
-
-    # Calculate current financial year start (assume Jan 1 for now)
     fy_start = date(today.year, 1, 1)
 
-    # --- Sync P&L Report ---
+    reports_synced = []
+    errors = []
+
+    # --- Monthly P&L sync -> financial_line_items ---
+    pnl_result = await _sync_pnl_monthly(
+        db, org_id, access_token, tenant_id, fy_start, today
+    )
+    if pnl_result["months_synced"] > 0:
+        reports_synced.append("ProfitAndLoss")
+    errors.extend(pnl_result.get("errors", []))
+
+    # --- Balance Sheet (point-in-time) ---
     try:
-        logger.info(f"[XERO] Fetching P&L for org={org_id}, from={fy_start} to={today}")
-        async with httpx.AsyncClient() as client:
-            pl_resp = await client.get(
-                f"{XERO_API_BASE}/Reports/ProfitAndLoss",
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Xero-Tenant-Id": tenant_id,
-                    "Accept": "application/json",
-                },
-                params={
-                    "fromDate": fy_start.isoformat(),
-                    "toDate": today.isoformat(),
-                },
-                timeout=30.0,
-            )
-
-        logger.info(f"[XERO] P&L response status: {pl_resp.status_code}")
-
-        if pl_resp.status_code == 200:
-            pl_data = pl_resp.json()
-
-            await db.execute(
-                text(
-                    "INSERT INTO financial_data "
-                    "(id, organisation_id, report_type, period_start, period_end, data, fetched_at) "
-                    "VALUES (:id, :org_id, 'ProfitAndLoss', :start, :end, :data, :fetched) "
-                    "ON CONFLICT (organisation_id, report_type, period_start, period_end) "
-                    "DO UPDATE SET data = EXCLUDED.data, fetched_at = EXCLUDED.fetched_at"
-                ),
-                {
-                    "id": str(uuid.uuid4()),
-                    "org_id": org_id,
-                    "start": fy_start,
-                    "end": today,
-                    "data": json.dumps(pl_data),
-                    "fetched": now,
-                }
-            )
-            reports_synced.append("ProfitAndLoss")
-            logger.info(f"[XERO] P&L synced for org={org_id}")
-        else:
-            error_body = pl_resp.text[:500]
-            logger.error(f"[XERO] P&L fetch failed: {pl_resp.status_code} - {error_body}")
-            errors.append(f"P&L: HTTP {pl_resp.status_code}")
-    except Exception as e:
-        logger.error(f"[XERO] P&L sync error: {type(e).__name__}: {e}")
-        errors.append(f"P&L: {type(e).__name__}: {e}")
-
-    # --- Sync Balance Sheet Report ---
-    try:
-        logger.info(f"[XERO] Fetching Balance Sheet for org={org_id}, date={today}")
         async with httpx.AsyncClient() as client:
             bs_resp = await client.get(
                 f"{XERO_API_BASE}/Reports/BalanceSheet",
@@ -603,17 +764,11 @@ async def xero_sync(
                     "Xero-Tenant-Id": tenant_id,
                     "Accept": "application/json",
                 },
-                params={
-                    "date": today.isoformat(),
-                },
+                params={"date": today.isoformat()},
                 timeout=30.0,
             )
 
-        logger.info(f"[XERO] Balance Sheet response status: {bs_resp.status_code}")
-
         if bs_resp.status_code == 200:
-            bs_data = bs_resp.json()
-
             await db.execute(
                 text(
                     "INSERT INTO financial_data "
@@ -627,21 +782,18 @@ async def xero_sync(
                     "org_id": org_id,
                     "start": today,
                     "end": today,
-                    "data": json.dumps(bs_data),
+                    "data": json.dumps(bs_resp.json()),
                     "fetched": now,
                 }
             )
+            await db.commit()
             reports_synced.append("BalanceSheet")
-            logger.info(f"[XERO] Balance Sheet synced for org={org_id}")
         else:
-            error_body = bs_resp.text[:500]
-            logger.error(f"[XERO] Balance Sheet fetch failed: {bs_resp.status_code} - {error_body}")
             errors.append(f"BalanceSheet: HTTP {bs_resp.status_code}")
     except Exception as e:
-        logger.error(f"[XERO] Balance Sheet sync error: {type(e).__name__}: {e}")
         errors.append(f"BalanceSheet: {type(e).__name__}: {e}")
 
-    # --- Sync Chart of Accounts into account_mappings ---
+    # --- Chart of Accounts ---
     coa_stats = await _sync_chart_of_accounts(db, org_id, access_token, tenant_id)
 
     # Update last_sync_at
@@ -654,23 +806,75 @@ async def xero_sync(
     )
     await db.commit()
 
-    mapping_complete = coa_stats["unmapped"] == 0
-
     result = {
         "success": True,
         "reports_synced": reports_synced,
+        "months_synced": pnl_result["months_synced"],
+        "line_items_upserted": pnl_result["line_items_upserted"],
         "synced_at": now.isoformat(),
         "accounts_total": coa_stats["total"],
         "accounts_mapped": coa_stats["mapped"],
         "accounts_unmapped": coa_stats["unmapped"],
-        "mapping_complete": mapping_complete,
+        "mapping_complete": coa_stats["unmapped"] == 0,
     }
-
-    # Include errors in response if any occurred
     if errors:
         result["errors"] = errors
-
     return result
+
+
+@router.post("/backfill-line-items")
+async def xero_backfill_line_items(
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    One-time repair: re-parse existing financial_data JSONB blobs into financial_line_items.
+    Safe to run multiple times — uses ON CONFLICT upsert.
+    Run this once after deploying, then run /sync to fetch proper monthly grain.
+    """
+    org_id = _get_org_id(current_user)
+    now = datetime.now(timezone.utc)
+
+    result = await db.execute(
+        text(
+            "SELECT period_start, period_end, data "
+            "FROM financial_data "
+            "WHERE organisation_id = :org_id "
+            "  AND report_type = 'ProfitAndLoss' "
+            "ORDER BY period_start"
+        ),
+        {"org_id": org_id}
+    )
+    rows = result.fetchall()
+
+    total_upserted = 0
+    processed = 0
+
+    for row in rows:
+        try:
+            raw = row.data
+            if isinstance(raw, str):
+                pl_data = json.loads(raw)
+            else:
+                pl_data = raw  # already dict (Neon returns parsed JSONB)
+
+            line_items = _parse_pnl_rows(pl_data)
+            upserted = await _upsert_line_items(
+                db, org_id, row.period_start, row.period_end, line_items, now
+            )
+            total_upserted += upserted
+            processed += 1
+        except Exception as e:
+            logger.error(
+                f"[XERO] Backfill error for {row.period_start}: {type(e).__name__}: {e}"
+            )
+
+    return {
+        "success": True,
+        "message": "Backfill complete. Run /sync to fetch proper monthly grain.",
+        "rows_processed": processed,
+        "line_items_upserted": total_upserted,
+    }
 
 
 @router.delete("/disconnect")
