@@ -4,6 +4,10 @@ FinSight AI - Reports Router (Workstream 3)
 Actual vs Budget reporting endpoints.
 Queries financial_line_items (normalised) joined to account_mappings and budgets.
 All financial calculations performed server-side.
+
+FIX (v2): Pre-aggregate financial_line_items into fli_agg CTE before joining to
+account_mappings. Previously, accounts with multiple mapping rows caused the
+actuals JOIN to fan out, producing duplicate rows per account per period.
 """
 
 from fastapi import APIRouter, Depends
@@ -38,41 +42,57 @@ async def actual_vs_budget(
 
     result = await db.execute(
         text("""
-            SELECT
-                am.reporting_category,
-                am.account_code,
-                am.account_name,
-                COALESCE(fli.net_amount, 0)           AS actual,
-                COALESCE(b_agg.total_budget, 0)       AS budget,
-                COALESCE(fli.net_amount, 0)
-                    - COALESCE(b_agg.total_budget, 0) AS variance,
-                CASE
-                    WHEN COALESCE(b_agg.total_budget, 0) = 0 THEN NULL
-                    ELSE ROUND(
-                        (COALESCE(fli.net_amount, 0) - COALESCE(b_agg.total_budget, 0))
-                        / ABS(b_agg.total_budget) * 100, 1
-                    )
-                END AS variance_pct
-            FROM account_mappings am
-            LEFT JOIN financial_line_items fli
-                ON  fli.organisation_id = am.organisation_id
-                AND fli.xero_account_id = am.xero_account_id
-                AND fli.report_type     = 'ProfitAndLoss'
-                AND fli.period_start   >= :period_start
-                AND fli.period_end     <= :period_end
-            LEFT JOIN (
+            WITH fli_agg AS (
+                -- Pre-aggregate actuals to one row per (xero_account_id)
+                -- across the full requested period before joining to mappings.
+                -- This prevents fan-out when account_mappings has multiple rows
+                -- for the same xero_account_id.
+                SELECT
+                    organisation_id,
+                    xero_account_id,
+                    SUM(net_amount) AS net_amount
+                FROM financial_line_items
+                WHERE organisation_id = :org_id
+                  AND report_type     = 'ProfitAndLoss'
+                  AND period_start   >= :period_start
+                  AND period_end     <= :period_end
+                GROUP BY organisation_id, xero_account_id
+            ),
+            b_agg AS (
+                -- Pre-aggregate budgets to one row per account_code
+                -- across the full requested period.
                 SELECT organisation_id, account_code, SUM(amount) AS total_budget
                 FROM budgets
                 WHERE organisation_id = :org_id
                   AND period_start >= :period_start
                   AND period_end   <= :period_end
                 GROUP BY organisation_id, account_code
-            ) b_agg
+            )
+            SELECT
+                am.reporting_category,
+                am.account_code,
+                am.account_name,
+                COALESCE(fli_agg.net_amount, 0)           AS actual,
+                COALESCE(b_agg.total_budget, 0)           AS budget,
+                COALESCE(fli_agg.net_amount, 0)
+                    - COALESCE(b_agg.total_budget, 0)     AS variance,
+                CASE
+                    WHEN COALESCE(b_agg.total_budget, 0) = 0 THEN NULL
+                    ELSE ROUND(
+                        (COALESCE(fli_agg.net_amount, 0) - COALESCE(b_agg.total_budget, 0))
+                        / ABS(b_agg.total_budget) * 100, 1
+                    )
+                END AS variance_pct
+            FROM account_mappings am
+            LEFT JOIN fli_agg
+                ON  fli_agg.organisation_id = am.organisation_id
+                AND fli_agg.xero_account_id = am.xero_account_id
+            LEFT JOIN b_agg
                 ON  b_agg.organisation_id = am.organisation_id
                 AND b_agg.account_code    = am.account_code
             WHERE am.organisation_id = :org_id
               AND am.include_in_pnl  = TRUE
-              AND (fli.net_amount IS NOT NULL OR b_agg.total_budget IS NOT NULL)
+              AND (fli_agg.net_amount IS NOT NULL OR b_agg.total_budget IS NOT NULL)
             ORDER BY am.reporting_category, am.account_code
         """),
         {"org_id": org_id, "period_start": period_start, "period_end": period_end},
@@ -105,30 +125,40 @@ async def avb_kpis(
 
     result = await db.execute(
         text("""
-            SELECT
-                am.reporting_category,
-                COALESCE(SUM(fli.net_amount), 0)      AS actual,
-                COALESCE(SUM(b_agg.total_budget), 0)  AS budget
-            FROM account_mappings am
-            LEFT JOIN financial_line_items fli
-                ON  fli.organisation_id = am.organisation_id
-                AND fli.xero_account_id = am.xero_account_id
-                AND fli.report_type     = 'ProfitAndLoss'
-                AND fli.period_start   >= :period_start
-                AND fli.period_end     <= :period_end
-            LEFT JOIN (
+            WITH fli_agg AS (
+                SELECT
+                    organisation_id,
+                    xero_account_id,
+                    SUM(net_amount) AS net_amount
+                FROM financial_line_items
+                WHERE organisation_id = :org_id
+                  AND report_type     = 'ProfitAndLoss'
+                  AND period_start   >= :period_start
+                  AND period_end     <= :period_end
+                GROUP BY organisation_id, xero_account_id
+            ),
+            b_agg AS (
                 SELECT organisation_id, account_code, SUM(amount) AS total_budget
                 FROM budgets
                 WHERE organisation_id = :org_id
                   AND period_start >= :period_start
                   AND period_end   <= :period_end
                 GROUP BY organisation_id, account_code
-            ) b_agg
+            )
+            SELECT
+                am.reporting_category,
+                COALESCE(SUM(fli_agg.net_amount), 0)      AS actual,
+                COALESCE(SUM(b_agg.total_budget), 0)      AS budget
+            FROM account_mappings am
+            LEFT JOIN fli_agg
+                ON  fli_agg.organisation_id = am.organisation_id
+                AND fli_agg.xero_account_id = am.xero_account_id
+            LEFT JOIN b_agg
                 ON  b_agg.organisation_id = am.organisation_id
                 AND b_agg.account_code    = am.account_code
             WHERE am.organisation_id = :org_id
               AND am.include_in_pnl  = TRUE
-              AND (fli.net_amount IS NOT NULL OR b_agg.total_budget IS NOT NULL)
+              AND (fli_agg.net_amount IS NOT NULL OR b_agg.total_budget IS NOT NULL)
             GROUP BY am.reporting_category
             ORDER BY am.reporting_category
         """),
@@ -213,30 +243,40 @@ async def avb_bridge(
 
     result = await db.execute(
         text("""
-            SELECT
-                am.reporting_category,
-                COALESCE(SUM(fli.net_amount), 0)      AS actual,
-                COALESCE(SUM(b_agg.total_budget), 0)  AS budget
-            FROM account_mappings am
-            LEFT JOIN financial_line_items fli
-                ON  fli.organisation_id = am.organisation_id
-                AND fli.xero_account_id = am.xero_account_id
-                AND fli.report_type     = 'ProfitAndLoss'
-                AND fli.period_start   >= :period_start
-                AND fli.period_end     <= :period_end
-            LEFT JOIN (
+            WITH fli_agg AS (
+                SELECT
+                    organisation_id,
+                    xero_account_id,
+                    SUM(net_amount) AS net_amount
+                FROM financial_line_items
+                WHERE organisation_id = :org_id
+                  AND report_type     = 'ProfitAndLoss'
+                  AND period_start   >= :period_start
+                  AND period_end     <= :period_end
+                GROUP BY organisation_id, xero_account_id
+            ),
+            b_agg AS (
                 SELECT organisation_id, account_code, SUM(amount) AS total_budget
                 FROM budgets
                 WHERE organisation_id = :org_id
                   AND period_start >= :period_start
                   AND period_end   <= :period_end
                 GROUP BY organisation_id, account_code
-            ) b_agg
+            )
+            SELECT
+                am.reporting_category,
+                COALESCE(SUM(fli_agg.net_amount), 0)      AS actual,
+                COALESCE(SUM(b_agg.total_budget), 0)      AS budget
+            FROM account_mappings am
+            LEFT JOIN fli_agg
+                ON  fli_agg.organisation_id = am.organisation_id
+                AND fli_agg.xero_account_id = am.xero_account_id
+            LEFT JOIN b_agg
                 ON  b_agg.organisation_id = am.organisation_id
                 AND b_agg.account_code    = am.account_code
             WHERE am.organisation_id = :org_id
               AND am.include_in_pnl  = TRUE
-              AND (fli.net_amount IS NOT NULL OR b_agg.total_budget IS NOT NULL)
+              AND (fli_agg.net_amount IS NOT NULL OR b_agg.total_budget IS NOT NULL)
             GROUP BY am.reporting_category
         """),
         {"org_id": org_id, "period_start": period_start, "period_end": period_end},
@@ -288,39 +328,49 @@ async def avb_summary(
 
     result = await db.execute(
         text("""
-            SELECT
-                am.reporting_category,
-                COALESCE(SUM(fli.net_amount), 0)      AS actual,
-                COALESCE(SUM(b_agg.total_budget), 0)  AS budget,
-                COALESCE(SUM(fli.net_amount), 0)
-                    - COALESCE(SUM(b_agg.total_budget), 0) AS variance,
-                CASE
-                    WHEN COALESCE(SUM(b_agg.total_budget), 0) = 0 THEN NULL
-                    ELSE ROUND(
-                        (COALESCE(SUM(fli.net_amount), 0) - COALESCE(SUM(b_agg.total_budget), 0))
-                        / ABS(SUM(b_agg.total_budget)) * 100, 1
-                    )
-                END AS variance_pct
-            FROM account_mappings am
-            LEFT JOIN financial_line_items fli
-                ON  fli.organisation_id = am.organisation_id
-                AND fli.xero_account_id = am.xero_account_id
-                AND fli.report_type     = 'ProfitAndLoss'
-                AND fli.period_start   >= :period_start
-                AND fli.period_end     <= :period_end
-            LEFT JOIN (
+            WITH fli_agg AS (
+                SELECT
+                    organisation_id,
+                    xero_account_id,
+                    SUM(net_amount) AS net_amount
+                FROM financial_line_items
+                WHERE organisation_id = :org_id
+                  AND report_type     = 'ProfitAndLoss'
+                  AND period_start   >= :period_start
+                  AND period_end     <= :period_end
+                GROUP BY organisation_id, xero_account_id
+            ),
+            b_agg AS (
                 SELECT organisation_id, account_code, SUM(amount) AS total_budget
                 FROM budgets
                 WHERE organisation_id = :org_id
                   AND period_start >= :period_start
                   AND period_end   <= :period_end
                 GROUP BY organisation_id, account_code
-            ) b_agg
+            )
+            SELECT
+                am.reporting_category,
+                COALESCE(SUM(fli_agg.net_amount), 0)           AS actual,
+                COALESCE(SUM(b_agg.total_budget), 0)           AS budget,
+                COALESCE(SUM(fli_agg.net_amount), 0)
+                    - COALESCE(SUM(b_agg.total_budget), 0)     AS variance,
+                CASE
+                    WHEN COALESCE(SUM(b_agg.total_budget), 0) = 0 THEN NULL
+                    ELSE ROUND(
+                        (COALESCE(SUM(fli_agg.net_amount), 0) - COALESCE(SUM(b_agg.total_budget), 0))
+                        / ABS(SUM(b_agg.total_budget)) * 100, 1
+                    )
+                END AS variance_pct
+            FROM account_mappings am
+            LEFT JOIN fli_agg
+                ON  fli_agg.organisation_id = am.organisation_id
+                AND fli_agg.xero_account_id = am.xero_account_id
+            LEFT JOIN b_agg
                 ON  b_agg.organisation_id = am.organisation_id
                 AND b_agg.account_code    = am.account_code
             WHERE am.organisation_id = :org_id
               AND am.include_in_pnl  = TRUE
-              AND (fli.net_amount IS NOT NULL OR b_agg.total_budget IS NOT NULL)
+              AND (fli_agg.net_amount IS NOT NULL OR b_agg.total_budget IS NOT NULL)
             GROUP BY am.reporting_category
             ORDER BY am.reporting_category
         """),
@@ -509,7 +559,6 @@ async def data_health(
     period_row = dict(period_result.mappings().fetchone() or {})
 
     # Xero connection status
-    # Detect actual live schema instead of hardcoding columns like tenant_name
     xero_columns_result = await db.execute(
         text("""
             SELECT column_name
@@ -519,34 +568,10 @@ async def data_health(
     )
     xero_columns = {row["column_name"] for row in xero_columns_result.mappings().all()}
 
-    name_candidates = [
-        "tenant_name",
-        "tenant_display_name",
-        "xero_tenant_name",
-        "organisation_name",
-        "company_name",
-        "name",
-    ]
-    connected_candidates = [
-        "connected_at",
-        "created_at",
-        "updated_at",
-        "last_synced_at",
-        "last_sync_at",
-    ]
-    expiry_candidates = [
-        "token_expiry",
-        "expires_at",
-        "access_token_expires_at",
-        "expiry_at",
-    ]
-    order_candidates = [
-        "connected_at",
-        "updated_at",
-        "created_at",
-        "last_synced_at",
-        "last_sync_at",
-    ]
+    name_candidates = ["tenant_name", "tenant_display_name", "xero_tenant_name", "organisation_name", "company_name", "name"]
+    connected_candidates = ["connected_at", "created_at", "updated_at", "last_synced_at", "last_sync_at"]
+    expiry_candidates = ["token_expiry", "expires_at", "access_token_expires_at", "expiry_at"]
+    order_candidates = ["connected_at", "updated_at", "created_at", "last_synced_at", "last_sync_at"]
 
     name_col = next((c for c in name_candidates if c in xero_columns), None)
     connected_col = next((c for c in connected_candidates if c in xero_columns), None)
@@ -564,24 +589,12 @@ async def data_health(
         if expiry_col:
             select_parts.append(f"{expiry_col} AS token_expiry")
 
-        # If no recognised columns exist, just return basic connected flag
         if not select_parts:
-            xero_query = """
-                SELECT organisation_id
-                FROM xero_connections
-                WHERE organisation_id = :org_id
-                LIMIT 1
-            """
+            xero_query = "SELECT organisation_id FROM xero_connections WHERE organisation_id = :org_id LIMIT 1"
             xero_result = await db.execute(text(xero_query), {"org_id": org_id})
             xero_row = xero_result.mappings().fetchone()
-
             if xero_row:
-                xero_status = {
-                    "tenant_name": None,
-                    "connected_at": None,
-                    "token_expiry": None,
-                    "connected": True,
-                }
+                xero_status = {"tenant_name": None, "connected_at": None, "token_expiry": None, "connected": True}
         else:
             order_clause = f" ORDER BY {order_col} DESC" if order_col else ""
             xero_query = f"""
@@ -593,7 +606,6 @@ async def data_health(
             """
             xero_result = await db.execute(text(xero_query), {"org_id": org_id})
             xero_row = xero_result.mappings().fetchone()
-
             if xero_row:
                 xero_status = {
                     "tenant_name": xero_row.get("tenant_name"),
