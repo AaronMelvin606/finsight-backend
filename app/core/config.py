@@ -67,13 +67,12 @@ class Settings(BaseSettings):
 
     SENTRY_DSN: str = ""
 ENVIRONMENT: str = "production"
-```
 
 **Add to Cloud Run environment variables**
 
 In Google Cloud Run, add two new environment variables to your `finsight-backend` service:
-```
-SENTRY_DSN = <your backend DSN from Sentry>
+
+SENTRY_DSN = <https://8962b2dbb76adc5b0dfd4f2bc0a58820@o4511016868249600.ingest.de.sentry.io/4511016898658384>
 ENVIRONMENT = production
     
     class Config:
