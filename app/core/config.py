@@ -64,6 +64,17 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_S3_BUCKET: Optional[str] = None
     AWS_REGION: str = "eu-west-2"  # London
+
+    SENTRY_DSN: str = ""
+ENVIRONMENT: str = "production"
+```
+
+**Add to Cloud Run environment variables**
+
+In Google Cloud Run, add two new environment variables to your `finsight-backend` service:
+```
+SENTRY_DSN = <your backend DSN from Sentry>
+ENVIRONMENT = production
     
     class Config:
         env_file = ".env"
