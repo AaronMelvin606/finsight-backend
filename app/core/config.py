@@ -65,15 +65,8 @@ class Settings(BaseSettings):
     AWS_S3_BUCKET: Optional[str] = None
     AWS_REGION: str = "eu-west-2"  # London
 
-    SENTRY_DSN: str = ""
-ENVIRONMENT: str = "production"
-
-**Add to Cloud Run environment variables**
-
-In Google Cloud Run, add two new environment variables to your `finsight-backend` service:
-
-SENTRY_DSN = <https://8962b2dbb76adc5b0dfd4f2bc0a58820@o4511016868249600.ingest.de.sentry.io/4511016898658384>
-ENVIRONMENT = production
+    # Sentry (error monitoring)
+    SENTRY_DSN: Optional[str] = None
     
     class Config:
         env_file = ".env"
