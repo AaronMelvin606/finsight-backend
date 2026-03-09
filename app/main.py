@@ -173,6 +173,21 @@ async def preflight_handler(request: Request, rest_of_path: str):
     headers = _get_cors_headers(request)
     return JSONResponse(content={"message": "OK"}, headers=headers)
 
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
+
+sentry_sdk.init(
+    dsn=settings.SENTRY_DSN,
+    integrations=[
+        StarletteIntegration(),
+        FastApiIntegration(),
+    ],
+    traces_sample_rate=1.0,
+    environment=settings.ENVIRONMENT,
+    send_default_pii=False,
+)
+
 
 # Include routers
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
