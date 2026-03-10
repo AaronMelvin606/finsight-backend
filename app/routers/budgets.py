@@ -3,9 +3,10 @@ FinSight AI - Budgets Router (Workstream 3)
 ============================================
 Budget CRUD endpoints.
 Fixed to use User ORM object and correct budgets table columns.
+CSV bulk upload supported.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -104,20 +105,25 @@ async def create_budget(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# BULK CREATE BUDGETS
+# BULK CREATE BUDGETS (CSV upload)
 # ──────────────────────────────────────────────────────────────────────
 
 @router.post("/budgets/bulk", status_code=201)
 async def bulk_create_budgets(
-    payload: list[BudgetEntry],
+    file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     org_id = str(current_user.organisation_id)
-    if not payload:
-        raise HTTPException(status_code=400, detail="No budget entries provided")
+    contents = await file.read()
+    decoded = contents.decode("utf-8")
+    reader = csv.DictReader(io.StringIO(decoded))
+
     count = 0
-    for entry in payload:
+    for row in reader:
+        amount_str = row.get("amount", "").strip()
+        if not amount_str:
+            continue
         await db.execute(
             text("""
                 INSERT INTO budgets
@@ -126,18 +132,21 @@ async def bulk_create_budgets(
                 VALUES
                     (:org_id, :budget_name, :account_code, :account_name,
                      :period_start, :period_end, :amount)
+                ON CONFLICT (organisation_id, account_code, period_start)
+                DO UPDATE SET amount = EXCLUDED.amount, updated_at = now()
             """),
             {
                 "org_id": org_id,
-                "budget_name": entry.budget_name,
-                "account_code": entry.account_code,
-                "account_name": entry.account_name,
-                "period_start": entry.period_start,
-                "period_end": entry.period_end,
-                "amount": entry.amount,
+                "budget_name": "Default Budget",
+                "account_code": row["account_code"].strip(),
+                "account_name": row["account_name"].strip(),
+                "period_start": row["period_start"].strip(),
+                "period_end": row["period_end"].strip(),
+                "amount": float(amount_str),
             },
         )
         count += 1
+
     await db.commit()
     return {"message": f"{count} budget entries saved"}
 
@@ -232,14 +241,8 @@ async def budget_template(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Returns a CSV template pre-populated with the client's mapped P&L account codes.
-    One row per account per month in the period range.
-    The amount column is blank for the user to fill in.
-    """
     org_id = str(current_user.organisation_id)
 
-    # Get mapped P&L accounts
     result = await db.execute(
         text("""
             SELECT account_code, account_name, reporting_category
@@ -256,7 +259,6 @@ async def budget_template(
     if not accounts:
         raise HTTPException(status_code=404, detail="No mapped P&L accounts found")
 
-    # Generate monthly periods
     from dateutil.relativedelta import relativedelta
     periods = []
     current = period_start.replace(day=1)
@@ -267,7 +269,6 @@ async def budget_template(
         periods.append((current, month_end))
         current = current + relativedelta(months=1)
 
-    # Build CSV
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["account_code", "account_name", "reporting_category",
@@ -281,7 +282,7 @@ async def budget_template(
                 account["reporting_category"],
                 str(p_start),
                 str(p_end),
-                "",  # blank for user to fill in
+                "",
             ])
 
     output.seek(0)
