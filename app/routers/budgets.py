@@ -191,4 +191,24 @@ async def update_budget(
 # DELETE BUDGET
 # ──────────────────────────────────────────────────────────────────────
 
-@router.delete("
+@router.delete("/budgets/{budget_id}", status_code=200)
+async def delete_budget(
+    budget_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    org_id = str(current_user.organisation_id)
+    result = await db.execute(
+        text("""
+            DELETE FROM budgets
+            WHERE id = :budget_id
+              AND organisation_id = :org_id
+            RETURNING id
+        """),
+        {"org_id": org_id, "budget_id": budget_id},
+    )
+    await db.commit()
+    row = result.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Budget entry not found")
+    return {"message": "Budget entry deleted", "id": budget_id}
