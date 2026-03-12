@@ -5,6 +5,7 @@ API endpoints for user authentication with organisation context.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
@@ -173,14 +174,14 @@ async def register(
 
 @router.post("/login", response_model=Token)
 async def login(
-    credentials: UserLogin,
+    form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Login with email and password (JSON body).
     Returns access and refresh tokens with organisation context.
     """
-    user = await authenticate_user(db, credentials.email, credentials.password)
+    user = await authenticate_user(db, form_data.username, form_data.password)
 
     if not user:
         raise HTTPException(

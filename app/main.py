@@ -148,10 +148,24 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    def make_serialisable(value):
+        """
+        Recursively convert any bytes values to UTF-8 strings so the
+        structure can be safely passed to JSONResponse.
+        """
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        if isinstance(value, dict):
+            return {k: make_serialisable(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            t = type(value)
+            return t(make_serialisable(v) for v in value)
+        return value
+
     headers = _get_cors_headers(request)
     return JSONResponse(
         status_code=422,
-        content={"detail": exc.errors()},
+        content={"detail": make_serialisable(exc.errors())},
         headers=headers,
     )
 
