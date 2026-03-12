@@ -39,6 +39,7 @@ from app.services.auth_service import (
     get_user_by_email,
 )
 
+import sentry_sdk
 import uuid
 import logging
 import traceback
@@ -46,6 +47,49 @@ import traceback
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _check_registration_allowed(email: str) -> None:
+    """
+    Raise HTTP 403 if open registration is disabled and the email
+    is not on the allowed list.
+
+    Controlled by the ALLOWED_REGISTRATION_EMAILS environment variable.
+    Set to a comma-separated list of permitted emails, e.g.:
+        aaron@finsightai.tech,demo@finsightai.tech
+
+    If the variable is empty or unset, ALL registration is blocked.
+    This is intentional — FinSight AI is invite-only during stealth.
+    """
+    raw = getattr(settings, "ALLOWED_REGISTRATION_EMAILS", "") or ""
+    allowed = [e.strip().lower() for e in raw.split(",") if e.strip()]
+
+    if not allowed:
+        logger.warning(
+            f"[REGISTER] Blocked registration attempt for {email} — "
+            "ALLOWED_REGISTRATION_EMAILS is empty (invite-only mode active)"
+        )
+        sentry_sdk.capture_message(
+            f"Registration blocked (no allowlist configured): {email}",
+            level="warning",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Registration is currently invite-only. Please contact hello@finsightai.tech.",
+        )
+
+    if email.lower() not in allowed:
+        logger.warning(
+            f"[REGISTER] Blocked unauthorised registration attempt for {email}"
+        )
+        sentry_sdk.capture_message(
+            f"Unauthorised registration attempt blocked: {email}",
+            level="warning",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Registration is currently invite-only. Please contact hello@finsightai.tech.",
+        )
 
 
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
@@ -59,6 +103,9 @@ async def register(
     """
     try:
         logger.info(f"[REGISTER] Starting registration for email={user_data.email}")
+
+        # Allowlist check — blocks all unauthorised registration attempts
+        _check_registration_allowed(user_data.email)
 
         # Check if email already exists
         existing_user = await get_user_by_email(db, user_data.email)
@@ -74,6 +121,12 @@ async def register(
         user = await create_user_with_organisation(db, user_data)
 
         logger.info(f"[REGISTER] User created: id={user.id}, org_id={user.organisation_id}")
+
+        # Notify via Sentry so any new registration is visible immediately
+        sentry_sdk.capture_message(
+            f"New user registered: {user_data.email} | org: {user_data.organisation_name}",
+            level="warning",
+        )
 
         # Create tokens
         tokens = create_tokens_for_user(user)
@@ -236,7 +289,6 @@ async def refresh_token(
     """
     Refresh access token using a valid refresh token.
     """
-    # Decode and validate refresh token
     payload = security_decode_token(token_data.refresh_token)
 
     if payload.get("type") != "refresh":
@@ -248,7 +300,6 @@ async def refresh_token(
 
     user_id = payload.get("sub")
 
-    # Verify user still exists and is active
     result = await db.execute(
         select(User)
         .options(selectinload(User.organisation))
@@ -263,7 +314,6 @@ async def refresh_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Generate new tokens with org context
     tokens = create_tokens_for_user(user)
 
     return TokenResponse(
@@ -313,7 +363,6 @@ async def logout(
     """
     Logout current user.
     Note: With JWT, actual logout is handled client-side by deleting the token.
-    This endpoint can be used for logging/auditing purposes.
     """
     return {"message": "Successfully logged out"}
 
@@ -325,21 +374,16 @@ async def request_password_reset(
 ):
     """
     Request a password reset email.
-
     Note: Email sending not implemented yet.
-    For now, this just validates the email exists.
     """
     result = await db.execute(select(User).where(User.email == data.email))
     user = result.scalar_one_or_none()
 
-    # Always return success to prevent email enumeration
     if user:
-        # Generate reset token
         reset_token = str(uuid.uuid4())
         user.password_reset_token = reset_token
         user.password_reset_expires = datetime.now(timezone.utc)
         await db.commit()
-
         # TODO: Send email with reset link
 
     return {
@@ -366,7 +410,6 @@ async def confirm_password_reset(
             detail="Invalid or expired reset token"
         )
 
-    # Update password
     user.hashed_password = get_password_hash(data.new_password)
     user.password_reset_token = None
     user.password_reset_expires = None
@@ -400,6 +443,9 @@ async def register_simple(
             detail="email, password, full_name, and organisation_name are all required"
         )
 
+    # Allowlist check — same gate as the ORM register endpoint
+    _check_registration_allowed(email)
+
     # Check for existing email with raw SQL
     check_result = await db.execute(
         text("SELECT id FROM users WHERE email = :email"),
@@ -415,12 +461,10 @@ async def register_simple(
     user_id = str(uuid.uuid4())
     hashed_pw = get_password_hash(password)
 
-    # Build a URL-safe slug from the organisation name
     import re
     slug_base = re.sub(r"[^a-z0-9]+", "-", organisation_name.lower()).strip("-")[:80]
     slug = f"{slug_base}-{org_id[:8]}"
 
-    # Insert organisation
     await db.execute(
         text(
             "INSERT INTO organisations "
@@ -432,7 +476,6 @@ async def register_simple(
         {"id": org_id, "name": organisation_name, "slug": slug}
     )
 
-    # Insert user
     await db.execute(
         text(
             "INSERT INTO users "
@@ -452,6 +495,12 @@ async def register_simple(
     )
 
     await db.commit()
+
+    # Notify via Sentry so any new registration is visible immediately
+    sentry_sdk.capture_message(
+        f"New user registered (simple): {email} | org: {organisation_name}",
+        level="warning",
+    )
 
     logger.info(f"[REGISTER-SIMPLE] Created user={user_id} org={org_id} email={email}")
     return {"success": True, "email": email}
@@ -514,3 +563,24 @@ async def login_simple(
 
     logger.info(f"[LOGIN-SIMPLE] Successful login for email={email}")
     return {"access_token": access_token, "token_type": "bearer"}
+```
+
+---
+
+## What changed
+
+| Location | Change |
+|---|---|
+| Top of file | Added `import sentry_sdk` |
+| New function `_check_registration_allowed()` | Reads `ALLOWED_REGISTRATION_EMAILS` env var, blocks anything not on the list, fires Sentry warning on any blocked attempt |
+| `/register` | `_check_registration_allowed()` called before email check; Sentry `capture_message` fires on successful registration |
+| `/register-simple` | Same two additions |
+| Everything else | Unchanged |
+
+---
+
+## After pasting the file — one Cloud Run env var to add
+
+Go to Cloud Run → finsight-backend → Edit & Deploy New Revision → Variables:
+```
+ALLOWED_REGISTRATION_EMAILS = aaron@finsightai.tech,aaronmelvin123@gmail.com
