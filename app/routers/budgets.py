@@ -1,17 +1,21 @@
 """
-FinSight AI - Budgets Router (Workstream 3)
-============================================
-Budget CRUD endpoints.
-CSV bulk upload supported.
+FinSight AI - Budgets Router
+=============================
+Monthly budget CRUD endpoints.
+One row per account per month — required for AvB joins against Xero actuals.
+
+CSV upload format:
+    account_code,account_name,reporting_category,fiscal_year,budget_month,amount
+    200,Sales,Revenue,2026,4,45000
+    200,Sales,Revenue,2026,5,48000
 """
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from typing import Optional
-from datetime import date
 import io
 import csv
 
@@ -22,13 +26,24 @@ from app.models.user import User
 router = APIRouter()
 
 
+# ──────────────────────────────────────────────────────────────────────
+# SCHEMAS
+# ──────────────────────────────────────────────────────────────────────
+
 class BudgetEntry(BaseModel):
     account_code: str
     account_name: str
-    period_start: date
-    period_end: date
+    reporting_category: Optional[str] = None
+    fiscal_year: int
+    budget_month: int          # 1–12
     amount: float
     budget_name: Optional[str] = "Default Budget"
+
+    @validator("budget_month")
+    def validate_month(cls, v):
+        if not 1 <= v <= 12:
+            raise ValueError("budget_month must be between 1 and 12")
+        return v
 
 
 class BudgetUpdate(BaseModel):
@@ -41,34 +56,41 @@ class BudgetUpdate(BaseModel):
 
 @router.get("/budgets")
 async def list_budgets(
-    period_start: Optional[date] = None,
-    period_end: Optional[date] = None,
+    fiscal_year: Optional[int] = None,
+    budget_month: Optional[int] = None,
+    reporting_category: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     org_id = str(current_user.organisation_id)
     query = """
         SELECT id, budget_name, account_code, account_name,
-               period_start, period_end, amount,
+               reporting_category, fiscal_year, budget_month, amount,
                created_at, updated_at
         FROM budgets
         WHERE organisation_id = :org_id
     """
     params: dict = {"org_id": org_id}
-    if period_start:
-        query += " AND period_start >= :period_start"
-        params["period_start"] = period_start
-    if period_end:
-        query += " AND period_end <= :period_end"
-        params["period_end"] = period_end
-    query += " ORDER BY period_start, account_code"
+
+    if fiscal_year:
+        query += " AND fiscal_year = :fiscal_year"
+        params["fiscal_year"] = fiscal_year
+    if budget_month:
+        query += " AND budget_month = :budget_month"
+        params["budget_month"] = budget_month
+    if reporting_category:
+        query += " AND reporting_category = :reporting_category"
+        params["reporting_category"] = reporting_category
+
+    query += " ORDER BY fiscal_year, budget_month, account_code"
+
     result = await db.execute(text(query), params)
     rows = result.mappings().all()
     return {"budgets": [dict(r) for r in rows]}
 
 
 # ──────────────────────────────────────────────────────────────────────
-# CREATE BUDGET
+# CREATE SINGLE BUDGET ENTRY
 # ──────────────────────────────────────────────────────────────────────
 
 @router.post("/budgets", status_code=201)
@@ -82,10 +104,19 @@ async def create_budget(
         text("""
             INSERT INTO budgets
                 (organisation_id, budget_name, account_code, account_name,
-                 period_start, period_end, amount)
+                 reporting_category, fiscal_year, budget_month, amount,
+                 period_start, period_end)
             VALUES
                 (:org_id, :budget_name, :account_code, :account_name,
-                 :period_start, :period_end, :amount)
+                 :reporting_category, :fiscal_year, :budget_month, :amount,
+                 make_date(:fiscal_year, :budget_month, 1),
+                 (make_date(:fiscal_year, :budget_month, 1) + interval '1 month - 1 day')::date)
+            ON CONFLICT (organisation_id, account_code, fiscal_year, budget_month)
+            DO UPDATE SET
+                amount = EXCLUDED.amount,
+                reporting_category = EXCLUDED.reporting_category,
+                budget_name = EXCLUDED.budget_name,
+                updated_at = now()
             RETURNING id
         """),
         {
@@ -93,8 +124,9 @@ async def create_budget(
             "budget_name": payload.budget_name,
             "account_code": payload.account_code,
             "account_name": payload.account_name,
-            "period_start": payload.period_start,
-            "period_end": payload.period_end,
+            "reporting_category": payload.reporting_category,
+            "fiscal_year": payload.fiscal_year,
+            "budget_month": payload.budget_month,
             "amount": payload.amount,
         },
     )
@@ -113,11 +145,31 @@ async def bulk_create_budgets(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """
+    Upload a monthly budget CSV.
+
+    Required columns:
+        account_code, account_name, reporting_category, fiscal_year, budget_month, amount
+
+    Optional column:
+        budget_name (defaults to "Default Budget")
+
+    Upserts on (organisation_id, account_code, fiscal_year, budget_month).
+    """
     org_id = str(current_user.organisation_id)
 
     contents = await file.read()
     decoded = contents.decode("utf-8")
     reader = csv.DictReader(io.StringIO(decoded))
+
+    required_columns = {"account_code", "account_name", "fiscal_year", "budget_month", "amount"}
+    if reader.fieldnames:
+        missing = required_columns - {f.strip() for f in reader.fieldnames}
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"CSV missing required columns: {', '.join(sorted(missing))}"
+            )
 
     count = 0
     errors = []
@@ -127,22 +179,40 @@ async def bulk_create_budgets(
             amount_str = row.get("amount", "").strip()
             if not amount_str:
                 continue
+
+            fiscal_year = int(row["fiscal_year"].strip())
+            budget_month = int(row["budget_month"].strip())
+
+            if not 1 <= budget_month <= 12:
+                errors.append({"row": i, "error": f"budget_month {budget_month} is not 1–12"})
+                continue
+
             await db.execute(
                 text("""
                     INSERT INTO budgets
                         (organisation_id, budget_name, account_code, account_name,
-                         period_start, period_end, amount)
+                         reporting_category, fiscal_year, budget_month, amount,
+                         period_start, period_end)
                     VALUES
                         (:org_id, :budget_name, :account_code, :account_name,
-                         :period_start, :period_end, :amount)
+                         :reporting_category, :fiscal_year, :budget_month, :amount,
+                         make_date(:fiscal_year, :budget_month, 1),
+                         (make_date(:fiscal_year, :budget_month, 1) + interval '1 month - 1 day')::date)
+                    ON CONFLICT (organisation_id, account_code, fiscal_year, budget_month)
+                    DO UPDATE SET
+                        amount = EXCLUDED.amount,
+                        reporting_category = EXCLUDED.reporting_category,
+                        budget_name = EXCLUDED.budget_name,
+                        updated_at = now()
                 """),
                 {
                     "org_id": org_id,
-                    "budget_name": "Default Budget",
+                    "budget_name": row.get("budget_name", "Default Budget").strip() or "Default Budget",
                     "account_code": row["account_code"].strip(),
                     "account_name": row["account_name"].strip(),
-                    "period_start": row["period_start"].strip(),
-                    "period_end": row["period_end"].strip(),
+                    "reporting_category": row.get("reporting_category", "").strip() or None,
+                    "fiscal_year": fiscal_year,
+                    "budget_month": budget_month,
                     "amount": float(amount_str),
                 },
             )
@@ -155,7 +225,40 @@ async def bulk_create_budgets(
     if errors:
         return {"message": f"{count} entries saved", "errors": errors}
 
-    return {"message": f"{count} budget entries saved"}
+    return {"message": f"{count} budget entries saved successfully"}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# DOWNLOAD CSV TEMPLATE
+# ──────────────────────────────────────────────────────────────────────
+
+@router.get("/budgets/template")
+async def download_budget_template(
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Download a blank CSV template for budget upload.
+    """
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "account_code", "account_name", "reporting_category",
+        "fiscal_year", "budget_month", "amount", "budget_name"
+    ])
+    # Example rows covering Apr–Jun (months 4–6) for FY2026
+    writer.writerow(["200", "Sales", "Revenue", "2026", "4", "45000", "FY26 Budget"])
+    writer.writerow(["200", "Sales", "Revenue", "2026", "5", "48000", "FY26 Budget"])
+    writer.writerow(["200", "Sales", "Revenue", "2026", "6", "47000", "FY26 Budget"])
+    writer.writerow(["400", "Cost of Sales", "Cost of Sales", "2026", "4", "18000", "FY26 Budget"])
+    writer.writerow(["400", "Cost of Sales", "Cost of Sales", "2026", "5", "19200", "FY26 Budget"])
+    writer.writerow(["400", "Cost of Sales", "Cost of Sales", "2026", "6", "18800", "FY26 Budget"])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=finsight_budget_template.csv"}
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
