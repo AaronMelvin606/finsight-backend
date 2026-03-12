@@ -563,24 +563,3 @@ async def login_simple(
 
     logger.info(f"[LOGIN-SIMPLE] Successful login for email={email}")
     return {"access_token": access_token, "token_type": "bearer"}
-```
-
----
-
-## What changed
-
-| Location | Change |
-|---|---|
-| Top of file | Added `import sentry_sdk` |
-| New function `_check_registration_allowed()` | Reads `ALLOWED_REGISTRATION_EMAILS` env var, blocks anything not on the list, fires Sentry warning on any blocked attempt |
-| `/register` | `_check_registration_allowed()` called before email check; Sentry `capture_message` fires on successful registration |
-| `/register-simple` | Same two additions |
-| Everything else | Unchanged |
-
----
-
-## After pasting the file — one Cloud Run env var to add
-
-Go to Cloud Run → finsight-backend → Edit & Deploy New Revision → Variables:
-```
-ALLOWED_REGISTRATION_EMAILS = aaron@finsightai.tech,aaronmelvin123@gmail.com
