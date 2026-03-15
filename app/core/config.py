@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # JWT Authentication
     SECRET_KEY: str = "CHANGE-ME-set-SECRET_KEY-env-var"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60  # 60 minutes for Swagger/manual testing; override via env in prod if needed
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # Stripe (for subscriptions)
