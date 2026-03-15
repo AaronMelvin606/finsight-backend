@@ -12,7 +12,7 @@ actuals JOIN to fan out, producing duplicate rows per account per period.
 
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from typing import Optional
 from datetime import date
 import io
@@ -262,123 +262,173 @@ async def actual_vs_budget(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# HELPERS: Default period and YYYY-MM list
+# ──────────────────────────────────────────────────────────────────────
+
+def _default_period_start() -> date:
+    """1 April of current FY (April start)."""
+    today = date.today()
+    fy_year = today.year if today.month >= FY_START_MONTH else today.year - 1
+    return date(fy_year, FY_START_MONTH, 1)
+
+
+def _months_yyyy_mm_in_range(period_start: date, period_end: date) -> list[str]:
+    """Return list of YYYY-MM strings for every month in [period_start, period_end]."""
+    out: list[str] = []
+    y, m = period_start.year, period_start.month
+    while (y, m) <= (period_end.year, period_end.month):
+        out.append(f"{y}-{m:02d}")
+        if m == 12:
+            y, m = y + 1, 1
+        else:
+            m += 1
+    return out
+
+
+# OpEx reporting categories (P&L) for EBITDA calculation
+_OPEX_CATEGORIES = frozenset({
+    "Payroll & People Costs",
+    "Marketing & Sales",
+    "Technology & Infrastructure",
+    "Professional Fees",
+    "General & Administrative",
+})
+
+
+# ──────────────────────────────────────────────────────────────────────
 # ACTUAL VS BUDGET - KPIs
 # ──────────────────────────────────────────────────────────────────────
 
 @router.get("/reports/avb-kpis")
 async def avb_kpis(
-    period_start: date,
-    period_end: date,
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Pre-calculated KPIs for the Actual vs Budget view.
-    Returns Revenue, Gross Margin %, EBITDA, Monthly OpEx with budget variances.
+    Pre-calculated AvB KPIs. organisation_id from JWT only.
+    Optional period_start (default: 1 April current FY), period_end (default: today).
+    Actuals from financial_line_items + account_mappings (natural_sign applied);
+    budget from budget_monthly. All calculations backend-only; divide-by-zero returns 0.0.
     """
     org_id = str(current_user.organisation_id)
+    if not org_id:
+        raise HTTPException(status_code=403, detail="Organisation not set for user")
 
-    result = await db.execute(
+    today = date.today()
+    ps = period_start if period_start is not None else _default_period_start()
+    pe = period_end if period_end is not None else today
+    if ps > pe:
+        ps, pe = pe, ps
+
+    periods_list = _months_yyyy_mm_in_range(ps, pe)
+
+    # Actuals by reporting_category (P&L only; natural_sign applied)
+    actuals_result = await db.execute(
         text("""
-            WITH fli_agg AS (
-                SELECT
-                    organisation_id,
-                    xero_account_id,
-                    SUM(net_amount) AS net_amount
-                FROM financial_line_items
-                WHERE organisation_id = :org_id
-                  AND report_type     = 'ProfitAndLoss'
-                  AND period_start   >= :period_start
-                  AND period_end     <= :period_end
-                GROUP BY organisation_id, xero_account_id
-            ),
-            b_agg AS (
-                SELECT organisation_id, account_code, SUM(amount) AS total_budget
-                FROM budgets
-                WHERE organisation_id = :org_id
-                  AND period_start >= :period_start
-                  AND period_end   <= :period_end
-                GROUP BY organisation_id, account_code
-            )
             SELECT
                 am.reporting_category,
-                COALESCE(SUM(fli_agg.net_amount), 0)      AS actual,
-                COALESCE(SUM(b_agg.total_budget), 0)      AS budget
-            FROM account_mappings am
-            LEFT JOIN fli_agg
-                ON  fli_agg.organisation_id = am.organisation_id
-                AND fli_agg.xero_account_id = am.xero_account_id
-            LEFT JOIN b_agg
-                ON  b_agg.organisation_id = am.organisation_id
-                AND b_agg.account_code    = am.account_code
-            WHERE am.organisation_id = :org_id
-              AND am.include_in_pnl  = TRUE
-              AND (fli_agg.net_amount IS NOT NULL OR b_agg.total_budget IS NOT NULL)
+                SUM(fli.net_amount * am.natural_sign) AS actual
+            FROM financial_line_items fli
+            JOIN account_mappings am
+                ON  am.organisation_id = fli.organisation_id
+                AND am.xero_account_id = fli.xero_account_id
+            WHERE fli.organisation_id = :org_id
+              AND fli.report_type = 'ProfitAndLoss'
+              AND fli.period_start >= :period_start
+              AND fli.period_end   <= :period_end
+              AND am.statement_type = 'profit_and_loss'
             GROUP BY am.reporting_category
-            ORDER BY am.reporting_category
         """),
-        {"org_id": org_id, "period_start": period_start, "period_end": period_end},
+        {"org_id": org_id, "period_start": ps, "period_end": pe},
     )
-    rows = {r["reporting_category"]: r for r in result.mappings().all()}
+    actuals_by_cat = {r["reporting_category"]: float(r["actual"] or 0) for r in actuals_result.mappings().all()}
 
-    rev_actual = float(rows.get("REVENUE", {}).get("actual", 0))
-    rev_budget = float(rows.get("REVENUE", {}).get("budget", 0))
-    cogs_actual = float(rows.get("COGS", {}).get("actual", 0))
-    cogs_budget = float(rows.get("COGS", {}).get("budget", 0))
-    opex_actual = float(rows.get("OPEX", {}).get("actual", 0))
-    opex_budget = float(rows.get("OPEX", {}).get("budget", 0))
+    # Budget by reporting_category from budget_monthly (join to account_mappings for category)
+    if not periods_list:
+        budget_by_cat = {}
+    else:
+        budget_stmt = text("""
+            SELECT am.reporting_category, SUM(b.budget_amount) AS budget
+            FROM budget_monthly b
+            JOIN account_mappings am
+                ON  am.organisation_id = b.organisation_id
+                AND am.account_code    = b.account_code
+            WHERE b.organisation_id = :org_id
+              AND b.period IN :periods
+              AND am.statement_type = 'profit_and_loss'
+            GROUP BY am.reporting_category
+        """).bindparams(bindparam("periods", expanding=True))
+        budget_result = await db.execute(budget_stmt, {"org_id": org_id, "periods": periods_list})
+        budget_by_cat = {r["reporting_category"]: float(r["budget"] or 0) for r in budget_result.mappings().all()}
 
-    ebitda_actual = rev_actual - cogs_actual - opex_actual
-    ebitda_budget = rev_budget - cogs_budget - opex_budget
+    def _act(cat: str) -> float:
+        return actuals_by_cat.get(cat, 0.0)
 
-    gm_actual = rev_actual - cogs_actual
-    gm_budget = rev_budget - cogs_budget
-    gm_pct_actual = (gm_actual / rev_actual * 100) if rev_actual != 0 else 0
-    gm_pct_budget = (gm_budget / rev_budget * 100) if rev_budget != 0 else 0
+    def _bud(cat: str) -> float:
+        return budget_by_cat.get(cat, 0.0)
 
-    months_in_period = max(
-        1,
-        (period_end.year - period_start.year) * 12 + period_end.month - period_start.month + 1
+    revenue_actual_ytd = _act("Revenue")
+    revenue_budget_ytd = _bud("Revenue")
+    cost_of_sales_actual = _act("Cost of Sales")
+    cost_of_sales_budget = _bud("Cost of Sales")
+
+    revenue_variance = revenue_actual_ytd - revenue_budget_ytd
+    revenue_variance_pct = (
+        (revenue_variance / abs(revenue_budget_ytd) * 100) if revenue_budget_ytd != 0 else 0.0
     )
-    monthly_opex_actual = opex_actual / months_in_period
-    monthly_opex_budget = opex_budget / months_in_period
 
-    def safe_var_pct(actual_val: float, budget_val: float):
-        if budget_val == 0:
-            return None
-        return round((actual_val - budget_val) / abs(budget_val) * 100, 1)
+    gross_profit_actual = revenue_actual_ytd - cost_of_sales_actual
+    gross_profit_budget = revenue_budget_ytd - cost_of_sales_budget
+    gross_margin_actual_pct = (
+        (gross_profit_actual / revenue_actual_ytd * 100) if revenue_actual_ytd != 0 else 0.0
+    )
+    gross_margin_budget_pct = (
+        (gross_profit_budget / revenue_budget_ytd * 100) if revenue_budget_ytd != 0 else 0.0
+    )
+    gross_margin_variance_pct = gross_margin_actual_pct - gross_margin_budget_pct
+
+    opex_actual = sum(_act(c) for c in _OPEX_CATEGORIES)
+    opex_budget = sum(_bud(c) for c in _OPEX_CATEGORIES)
+    ebitda_actual = gross_profit_actual - opex_actual
+    ebitda_budget = gross_profit_budget - opex_budget
+    ebitda_variance = ebitda_actual - ebitda_budget
+    ebitda_variance_pct = (
+        (ebitda_variance / abs(ebitda_budget) * 100) if ebitda_budget != 0 else 0.0
+    )
+
+    budget_achievement_pct = (
+        (revenue_actual_ytd / revenue_budget_ytd * 100) if revenue_budget_ytd != 0 else 0.0
+    )
+
+    # Balance sheet data not yet in financial_line_items
+    cash_position = 0.0
+    debtor_days = 0
+
+    days_in_period = max(1, (pe - ps).days + 1)
 
     return {
-        "period_start": str(period_start),
-        "period_end": str(period_end),
-        "months_in_period": months_in_period,
-        "kpis": {
-            "revenue": {
-                "actual": round(rev_actual, 2),
-                "budget": round(rev_budget, 2),
-                "variance": round(rev_actual - rev_budget, 2),
-                "variance_pct": safe_var_pct(rev_actual, rev_budget),
-            },
-            "gross_margin": {
-                "actual_pct": round(gm_pct_actual, 1),
-                "budget_pct": round(gm_pct_budget, 1),
-                "variance_bps": round((gm_pct_actual - gm_pct_budget) * 100, 0),
-                "actual": round(gm_actual, 2),
-                "budget": round(gm_budget, 2),
-            },
-            "ebitda": {
-                "actual": round(ebitda_actual, 2),
-                "budget": round(ebitda_budget, 2),
-                "variance": round(ebitda_actual - ebitda_budget, 2),
-                "variance_pct": safe_var_pct(ebitda_actual, ebitda_budget),
-            },
-            "monthly_opex": {
-                "actual": round(monthly_opex_actual, 2),
-                "budget": round(monthly_opex_budget, 2),
-                "variance": round(monthly_opex_actual - monthly_opex_budget, 2),
-                "variance_pct": safe_var_pct(monthly_opex_actual, monthly_opex_budget),
-            },
-        },
+        "period_start": str(ps),
+        "period_end": str(pe),
+        "revenue_actual_ytd": round(revenue_actual_ytd, 2),
+        "revenue_budget_ytd": round(revenue_budget_ytd, 2),
+        "revenue_variance": round(revenue_variance, 2),
+        "revenue_variance_pct": round(revenue_variance_pct, 2),
+        "gross_profit_actual": round(gross_profit_actual, 2),
+        "gross_profit_budget": round(gross_profit_budget, 2),
+        "gross_margin_actual_pct": round(gross_margin_actual_pct, 2),
+        "gross_margin_budget_pct": round(gross_margin_budget_pct, 2),
+        "gross_margin_variance_pct": round(gross_margin_variance_pct, 2),
+        "ebitda_actual": round(ebitda_actual, 2),
+        "ebitda_budget": round(ebitda_budget, 2),
+        "ebitda_variance": round(ebitda_variance, 2),
+        "ebitda_variance_pct": round(ebitda_variance_pct, 2),
+        "budget_achievement_pct": round(budget_achievement_pct, 2),
+        "opex_actual": round(opex_actual, 2),
+        "opex_budget": round(opex_budget, 2),
+        "cash_position": round(cash_position, 2),
+        "debtor_days": int(debtor_days),
     }
 
 
