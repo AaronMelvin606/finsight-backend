@@ -10,17 +10,172 @@ account_mappings. Previously, accounts with multiple mapping rows caused the
 actuals JOIN to fan out, producing duplicate rows per account per period.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from typing import Optional
 from datetime import date
+import io
+import csv
 
 from app.core.database import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
 
 router = APIRouter()
+
+# CSV month columns (Apr–Mar order); FY start April = default.
+BUDGET_CSV_MONTH_COLUMNS = [
+    "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    "jan", "feb", "mar",
+]
+# Month name -> calendar month number (1–12)
+_MONTH_NAME_TO_NUM = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+# For FY start April: month 4–12 = FY year Y, month 1–3 = FY year Y+1
+FY_START_MONTH = 4
+
+
+def _period_for_fy_month(fiscal_year: int, month_name: str) -> str:
+    """Return YYYY-MM for the given FY year and month column (apr..mar)."""
+    month_num = _MONTH_NAME_TO_NUM[month_name.lower()]
+    if month_num >= FY_START_MONTH:
+        year = fiscal_year
+    else:
+        year = fiscal_year + 1
+    return f"{year}-{month_num:02d}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BUDGET UPLOAD (budget_monthly)
+# ──────────────────────────────────────────────────────────────────────
+
+@router.post("/reports/budget/upload", status_code=200)
+async def budget_upload(
+    file: UploadFile = File(...),
+    fiscal_year: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Upload a budget CSV into budget_monthly (AvB canonical table).
+
+    CSV format: account_code, account_name, apr, may, jun, jul, aug, sep, oct, nov, dec, jan, feb, mar
+    Month columns must be numeric. Account codes must exist in the organisation's account_mappings.
+    organisation_id is taken from the JWT; re-uploading overwrites (upsert by org + account_code + period).
+
+    Optional query param: fiscal_year (default: current FY with April start).
+    """
+    org_id = str(current_user.organisation_id)
+    if not org_id:
+        raise HTTPException(status_code=403, detail="Organisation not set for user")
+
+    # Default fiscal year: April start → current FY
+    today = date.today()
+    if fiscal_year is None:
+        fiscal_year = today.year if today.month >= FY_START_MONTH else today.year - 1
+
+    # Load valid account codes and reporting_category from account_mappings
+    result = await db.execute(
+        text("""
+            SELECT account_code, account_name, reporting_category
+            FROM account_mappings
+            WHERE organisation_id = :org_id
+        """),
+        {"org_id": org_id},
+    )
+    mapping_rows = result.mappings().all()
+    valid_accounts = {r["account_code"].strip(): {"account_name": r["account_name"], "reporting_category": r["reporting_category"]} for r in mapping_rows if r.get("account_code")}
+
+    if not valid_accounts:
+        raise HTTPException(
+            status_code=400,
+            detail="No account mappings found for this organisation. Sync Chart of Accounts from Xero first.",
+        )
+
+    required_columns = {"account_code", "account_name"} | set(BUDGET_CSV_MONTH_COLUMNS)
+    contents = await file.read()
+    try:
+        decoded = contents.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=422, detail="CSV must be UTF-8 encoded")
+    reader = csv.DictReader(io.StringIO(decoded))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=422, detail="CSV has no header row")
+    normalized_headers = {h.strip().lower(): h for h in reader.fieldnames}
+    missing = required_columns - set(normalized_headers.keys())
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"CSV missing required columns: {', '.join(sorted(missing))}. Expected: account_code, account_name, apr, may, jun, jul, aug, sep, oct, nov, dec, jan, feb, mar",
+        )
+
+    rows_accepted = 0
+    rows_rejected: list[dict] = []
+    total_budget_loaded: float = 0.0
+
+    def get_cell(row: dict, col: str) -> str:
+        key = normalized_headers.get(col, col)
+        return (row.get(key) or "").strip()
+
+    for row_index, row in enumerate(reader, start=2):
+        raw_code = get_cell(row, "account_code")
+        raw_name = get_cell(row, "account_name")
+        if not raw_code:
+            rows_rejected.append({"row": row_index, "reason": "Missing account_code"})
+            continue
+        if raw_code not in valid_accounts:
+            rows_rejected.append({"row": row_index, "reason": f"account_code '{raw_code}' not in organisation's account_mappings"})
+            continue
+        info = valid_accounts[raw_code]
+        account_name = raw_name or (info["account_name"] or "")
+        reporting_category = info["reporting_category"] or ""
+
+        for month_col in BUDGET_CSV_MONTH_COLUMNS:
+            val = get_cell(row, month_col)
+            if not val:
+                continue
+            try:
+                amount = float(val)
+            except ValueError:
+                rows_rejected.append({"row": row_index, "reason": f"Non-numeric value in column '{month_col}': {val[:50]}"})
+                continue
+            period = _period_for_fy_month(fiscal_year, month_col)
+            total_budget_loaded += amount
+            await db.execute(
+                text("""
+                    INSERT INTO budget_monthly
+                        (organisation_id, account_code, account_name, reporting_category, period, budget_amount, updated_at)
+                    VALUES
+                        (:org_id, :account_code, :account_name, :reporting_category, :period, :budget_amount, now())
+                    ON CONFLICT (organisation_id, account_code, period)
+                    DO UPDATE SET
+                        account_name = EXCLUDED.account_name,
+                        reporting_category = EXCLUDED.reporting_category,
+                        budget_amount = EXCLUDED.budget_amount,
+                        updated_at = now()
+                """),
+                {
+                    "org_id": org_id,
+                    "account_code": raw_code,
+                    "account_name": account_name,
+                    "reporting_category": reporting_category,
+                    "period": period,
+                    "budget_amount": amount,
+                },
+            )
+            rows_accepted += 1
+
+    await db.commit()
+
+    return {
+        "rows_accepted": rows_accepted,
+        "rows_rejected": rows_rejected,
+        "total_budget_loaded": round(total_budget_loaded, 2),
+        "fiscal_year": fiscal_year,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────
