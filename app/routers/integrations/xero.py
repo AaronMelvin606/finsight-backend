@@ -11,6 +11,7 @@ v2.5: Monthly P&L grain - fetches one report per calendar month,
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from datetime import datetime, timezone, timedelta, date
@@ -825,6 +826,73 @@ async def xero_sync(
     }
     if errors:
         result["errors"] = errors
+    return result
+
+
+class SyncRangeRequest(BaseModel):
+    from_date: date
+    to_date: date
+
+
+@router.post("/sync-range")
+async def xero_sync_range(
+    body: SyncRangeRequest,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Backfill historical P&L data from Xero for an arbitrary date range.
+    Calls _sync_pnl_monthly() with the provided from_date and to_date.
+    """
+    # Validate from_date < to_date
+    if body.from_date >= body.to_date:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="from_date must be before to_date",
+        )
+
+    # Validate range <= 24 months
+    month_diff = (
+        (body.to_date.year - body.from_date.year) * 12
+        + body.to_date.month - body.from_date.month
+    )
+    if month_diff > 24:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Date range must not exceed 24 months",
+        )
+
+    org_id = _get_org_id(current_user)
+
+    creds = await _refresh_tokens_if_needed(db, org_id)
+    access_token = creds["access_token"]
+    tenant_id = creds["xero_tenant_id"]
+
+    now = datetime.now(timezone.utc)
+
+    pnl_result = await _sync_pnl_monthly(
+        db, org_id, access_token, tenant_id, body.from_date, body.to_date
+    )
+
+    # Update last_sync_at
+    await db.execute(
+        text(
+            "UPDATE xero_connections SET last_sync_at = :now "
+            "WHERE organisation_id = :org_id AND is_active = true"
+        ),
+        {"now": now, "org_id": org_id},
+    )
+    await db.commit()
+
+    result = {
+        "success": True,
+        "reports_synced": ["ProfitAndLoss"] if pnl_result["months_synced"] > 0 else [],
+        "months_synced": pnl_result["months_synced"],
+        "line_items_upserted": pnl_result["line_items_upserted"],
+        "synced_at": now.isoformat(),
+    }
+    if pnl_result.get("errors"):
+        result["errors"] = pnl_result["errors"]
     return result
 
 
