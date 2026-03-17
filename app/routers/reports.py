@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, bindparam
 from typing import Optional
-from datetime import date
+from datetime import date, timedelta
 import io
 import csv
 
@@ -213,41 +213,41 @@ async def actual_vs_budget(
                   AND period_end     <= :period_end
                 GROUP BY organisation_id, xero_account_id
             ),
-            b_agg AS (
+            bm_agg AS (
                 -- Pre-aggregate budgets to one row per account_code
-                -- across the full requested period.
-                SELECT organisation_id, account_code, SUM(amount) AS total_budget
-                FROM budgets
+                -- across the full requested period (YYYY-MM matching).
+                SELECT organisation_id, account_code, SUM(budget_amount) AS total_budget
+                FROM budget_monthly
                 WHERE organisation_id = :org_id
-                  AND period_start >= :period_start
-                  AND period_end   <= :period_end
+                  AND period >= TO_CHAR(CAST(:period_start AS DATE), 'YYYY-MM')
+                  AND period <= TO_CHAR(CAST(:period_end AS DATE), 'YYYY-MM')
                 GROUP BY organisation_id, account_code
             )
             SELECT
                 am.reporting_category,
                 am.account_code,
                 am.account_name,
-                COALESCE(fli_agg.net_amount, 0)           AS actual,
-                COALESCE(b_agg.total_budget, 0)           AS budget,
+                COALESCE(fli_agg.net_amount, 0)            AS actual,
+                COALESCE(bm_agg.total_budget, 0)           AS budget,
                 COALESCE(fli_agg.net_amount, 0)
-                    - COALESCE(b_agg.total_budget, 0)     AS variance,
+                    - COALESCE(bm_agg.total_budget, 0)     AS variance,
                 CASE
-                    WHEN COALESCE(b_agg.total_budget, 0) = 0 THEN NULL
+                    WHEN COALESCE(bm_agg.total_budget, 0) = 0 THEN NULL
                     ELSE ROUND(
-                        (COALESCE(fli_agg.net_amount, 0) - COALESCE(b_agg.total_budget, 0))
-                        / ABS(b_agg.total_budget) * 100, 1
+                        (COALESCE(fli_agg.net_amount, 0) - COALESCE(bm_agg.total_budget, 0))
+                        / ABS(bm_agg.total_budget) * 100, 1
                     )
                 END AS variance_pct
             FROM account_mappings am
             LEFT JOIN fli_agg
                 ON  fli_agg.organisation_id = am.organisation_id
                 AND fli_agg.xero_account_id = am.xero_account_id
-            LEFT JOIN b_agg
-                ON  b_agg.organisation_id = am.organisation_id
-                AND b_agg.account_code    = am.account_code
+            LEFT JOIN bm_agg
+                ON  bm_agg.organisation_id = am.organisation_id
+                AND bm_agg.account_code    = am.account_code
             WHERE am.organisation_id = :org_id
               AND am.include_in_pnl  = TRUE
-              AND (fli_agg.net_amount IS NOT NULL OR b_agg.total_budget IS NOT NULL)
+              AND (fli_agg.net_amount IS NOT NULL OR bm_agg.total_budget IS NOT NULL)
             ORDER BY am.reporting_category, am.account_code
         """),
         {"org_id": org_id, "period_start": period_start, "period_end": period_end},
@@ -409,11 +409,58 @@ async def avb_kpis(
         (abs(opex_budget) / revenue_budget_ytd * 100) if revenue_budget_ytd != 0 else 0.0
     )
 
-    # Balance sheet data not yet in financial_line_items
-    cash_position = 0.0
-    debtor_days = 0
+    # Cash position from Balance Sheet (BANK accounts, most recent period)
+    cash_result = await db.execute(
+        text("""
+            SELECT COALESCE(SUM(fli.net_amount), 0) AS cash
+            FROM financial_line_items fli
+            JOIN account_mappings am
+              ON fli.organisation_id = am.organisation_id
+              AND fli.xero_account_id = am.xero_account_id
+            WHERE fli.organisation_id = :org_id
+              AND fli.report_type = 'BalanceSheet'
+              AND am.reporting_category = 'Cash & Bank'
+              AND fli.period_end = (
+                SELECT MAX(period_end)
+                FROM financial_line_items
+                WHERE organisation_id = :org_id
+                  AND report_type = 'BalanceSheet'
+                  AND period_end <= :period_end
+              )
+        """),
+        {"org_id": org_id, "period_end": pe},
+    )
+    cash_position = float((cash_result.scalar() or 0))
+
+    # Debtor days from Balance Sheet (receivable accounts in CURRENT_ASSET)
+    ar_result = await db.execute(
+        text("""
+            SELECT COALESCE(SUM(fli.net_amount), 0) AS ar
+            FROM financial_line_items fli
+            JOIN account_mappings am
+              ON fli.organisation_id = am.organisation_id
+              AND fli.xero_account_id = am.xero_account_id
+            WHERE fli.organisation_id = :org_id
+              AND fli.report_type = 'BalanceSheet'
+              AND am.reporting_category = 'Current Assets'
+              AND LOWER(am.account_name) LIKE '%%receivable%%'
+              AND fli.period_end = (
+                SELECT MAX(period_end)
+                FROM financial_line_items
+                WHERE organisation_id = :org_id
+                  AND report_type = 'BalanceSheet'
+                  AND period_end <= :period_end
+              )
+        """),
+        {"org_id": org_id, "period_end": pe},
+    )
+    accounts_receivable = float((ar_result.scalar() or 0))
 
     days_in_period = max(1, (pe - ps).days + 1)
+    debtor_days = (
+        (accounts_receivable / revenue_actual_ytd) * days_in_period
+        if revenue_actual_ytd != 0 else 0
+    )
 
     return {
         "period_start": str(ps),
@@ -554,37 +601,37 @@ async def avb_summary(
                   AND period_end     <= :period_end
                 GROUP BY organisation_id, xero_account_id
             ),
-            b_agg AS (
-                SELECT organisation_id, account_code, SUM(amount) AS total_budget
-                FROM budgets
+            bm_agg AS (
+                SELECT organisation_id, account_code, SUM(budget_amount) AS total_budget
+                FROM budget_monthly
                 WHERE organisation_id = :org_id
-                  AND period_start >= :period_start
-                  AND period_end   <= :period_end
+                  AND period >= TO_CHAR(CAST(:period_start AS DATE), 'YYYY-MM')
+                  AND period <= TO_CHAR(CAST(:period_end AS DATE), 'YYYY-MM')
                 GROUP BY organisation_id, account_code
             )
             SELECT
                 am.reporting_category,
-                COALESCE(SUM(fli_agg.net_amount), 0)           AS actual,
-                COALESCE(SUM(b_agg.total_budget), 0)           AS budget,
+                COALESCE(SUM(fli_agg.net_amount), 0)            AS actual,
+                COALESCE(SUM(bm_agg.total_budget), 0)           AS budget,
                 COALESCE(SUM(fli_agg.net_amount), 0)
-                    - COALESCE(SUM(b_agg.total_budget), 0)     AS variance,
+                    - COALESCE(SUM(bm_agg.total_budget), 0)     AS variance,
                 CASE
-                    WHEN COALESCE(SUM(b_agg.total_budget), 0) = 0 THEN NULL
+                    WHEN COALESCE(SUM(bm_agg.total_budget), 0) = 0 THEN NULL
                     ELSE ROUND(
-                        (COALESCE(SUM(fli_agg.net_amount), 0) - COALESCE(SUM(b_agg.total_budget), 0))
-                        / ABS(SUM(b_agg.total_budget)) * 100, 1
+                        (COALESCE(SUM(fli_agg.net_amount), 0) - COALESCE(SUM(bm_agg.total_budget), 0))
+                        / ABS(SUM(bm_agg.total_budget)) * 100, 1
                     )
                 END AS variance_pct
             FROM account_mappings am
             LEFT JOIN fli_agg
                 ON  fli_agg.organisation_id = am.organisation_id
                 AND fli_agg.xero_account_id = am.xero_account_id
-            LEFT JOIN b_agg
-                ON  b_agg.organisation_id = am.organisation_id
-                AND b_agg.account_code    = am.account_code
+            LEFT JOIN bm_agg
+                ON  bm_agg.organisation_id = am.organisation_id
+                AND bm_agg.account_code    = am.account_code
             WHERE am.organisation_id = :org_id
               AND am.include_in_pnl  = TRUE
-              AND (fli_agg.net_amount IS NOT NULL OR b_agg.total_budget IS NOT NULL)
+              AND (fli_agg.net_amount IS NOT NULL OR bm_agg.total_budget IS NOT NULL)
             GROUP BY am.reporting_category
             ORDER BY am.reporting_category
         """),
@@ -854,4 +901,132 @@ async def data_health(
             "total_line_items": int(period_row.get("total_line_items") or 0),
         },
         "xero": xero_status,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BALANCE SHEET
+# ──────────────────────────────────────────────────────────────────────
+
+# Section → categories mapping
+_BS_SECTIONS = [
+    {
+        "name": "Assets",
+        "categories": [
+            {"key": "Current Assets", "label": "Current Assets"},
+            {"key": "Fixed Assets", "label": "Fixed Assets"},
+            {"key": "Cash & Bank", "label": "Cash & Bank"},
+        ],
+    },
+    {
+        "name": "Liabilities",
+        "categories": [
+            {"key": "Current Liabilities", "label": "Current Liabilities"},
+            {"key": "Long-term Liabilities", "label": "Long-term Liabilities"},
+        ],
+    },
+    {
+        "name": "Equity",
+        "categories": [
+            {"key": "Equity", "label": "Equity"},
+        ],
+    },
+]
+
+
+@router.get("/reports/balance-sheet")
+async def balance_sheet(
+    as_of_date: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Balance Sheet report as of a given date.
+    Default as_of_date = last day of previous month.
+    """
+    org_id = str(current_user.organisation_id)
+
+    if as_of_date:
+        aod = date.fromisoformat(as_of_date)
+    else:
+        today = date.today()
+        first_of_month = today.replace(day=1)
+        aod = first_of_month - timedelta(days=1)
+
+    # Fetch all BS line items at the most recent period on or before as_of_date
+    result = await db.execute(
+        text("""
+            SELECT
+                am.reporting_category,
+                am.account_code,
+                am.account_name,
+                fli.net_amount AS balance
+            FROM financial_line_items fli
+            JOIN account_mappings am
+              ON fli.organisation_id = am.organisation_id
+              AND fli.xero_account_id = am.xero_account_id
+            WHERE fli.organisation_id = :org_id
+              AND fli.report_type = 'BalanceSheet'
+              AND fli.period_end = (
+                SELECT MAX(period_end)
+                FROM financial_line_items
+                WHERE organisation_id = :org_id
+                  AND report_type = 'BalanceSheet'
+                  AND period_end <= :as_of_date
+              )
+            ORDER BY am.reporting_category, am.account_name
+        """),
+        {"org_id": org_id, "as_of_date": aod},
+    )
+    rows = result.mappings().all()
+
+    # Group rows by reporting_category
+    accounts_by_cat: dict[str, list[dict]] = {}
+    for row in rows:
+        cat = row["reporting_category"]
+        accounts_by_cat.setdefault(cat, []).append({
+            "account_code": row["account_code"] or "",
+            "account_name": row["account_name"] or "",
+            "balance": round(float(row["balance"] or 0), 2),
+        })
+
+    # Build sections
+    sections = []
+    total_assets = 0.0
+    total_liabilities = 0.0
+    total_equity = 0.0
+
+    for section_def in _BS_SECTIONS:
+        categories = []
+        section_total = 0.0
+        for cat_def in section_def["categories"]:
+            cat_accounts = accounts_by_cat.get(cat_def["key"], [])
+            cat_total = round(sum(a["balance"] for a in cat_accounts), 2)
+            section_total += cat_total
+            categories.append({
+                "category_key": cat_def["key"],
+                "category_label": cat_def["label"],
+                "accounts": cat_accounts,
+                "total": cat_total,
+            })
+        section_total = round(section_total, 2)
+        sections.append({
+            "name": section_def["name"],
+            "categories": categories,
+            "total": section_total,
+        })
+        if section_def["name"] == "Assets":
+            total_assets = section_total
+        elif section_def["name"] == "Liabilities":
+            total_liabilities = section_total
+        elif section_def["name"] == "Equity":
+            total_equity = section_total
+
+    return {
+        "as_of_date": str(aod),
+        "sections": sections,
+        "total_assets": round(total_assets, 2),
+        "total_liabilities": round(total_liabilities, 2),
+        "total_equity": round(total_equity, 2),
+        "net_assets": round(total_assets - total_liabilities + total_equity, 2),
     }
