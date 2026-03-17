@@ -391,8 +391,8 @@ async def avb_kpis(
 
     opex_actual = sum(_act(c) for c in _OPEX_CATEGORIES)
     opex_budget = sum(_bud(c) for c in _OPEX_CATEGORIES)
-    ebitda_actual = gross_profit_actual - opex_actual
-    ebitda_budget = gross_profit_budget - opex_budget
+    ebitda_actual = gross_profit_actual + opex_actual
+    ebitda_budget = gross_profit_budget + opex_budget
     ebitda_variance = ebitda_actual - ebitda_budget
     ebitda_variance_pct = (
         (ebitda_variance / abs(ebitda_budget) * 100) if ebitda_budget != 0 else 0.0
@@ -403,10 +403,10 @@ async def avb_kpis(
     )
 
     cost_ratio_actual = (
-        (opex_actual / revenue_actual_ytd * 100) if revenue_actual_ytd != 0 else 0.0
+        (abs(opex_actual) / revenue_actual_ytd * 100) if revenue_actual_ytd != 0 else 0.0
     )
     cost_ratio_budget = (
-        (opex_budget / revenue_budget_ytd * 100) if revenue_budget_ytd != 0 else 0.0
+        (abs(opex_budget) / revenue_budget_ytd * 100) if revenue_budget_ytd != 0 else 0.0
     )
 
     # Balance sheet data not yet in financial_line_items
