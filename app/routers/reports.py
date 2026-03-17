@@ -34,14 +34,22 @@ _MONTH_NAME_TO_NUM = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
-# For FY start April: month 4–12 = FY year Y, month 1–3 = FY year Y+1
-FY_START_MONTH = 4
 
 
-def _period_for_fy_month(fiscal_year: int, month_name: str) -> str:
+async def _get_fy_start_month(db: AsyncSession, org_id: str) -> int:
+    """Fetch fy_start_month from the organisations table for the given org."""
+    result = await db.execute(
+        text("SELECT fy_start_month FROM organisations WHERE id = :org_id"),
+        {"org_id": org_id},
+    )
+    row = result.scalar()
+    return int(row) if row is not None else 4
+
+
+def _period_for_fy_month(fiscal_year: int, month_name: str, fy_start_month: int) -> str:
     """Return YYYY-MM for the given FY year and month column (apr..mar)."""
     month_num = _MONTH_NAME_TO_NUM[month_name.lower()]
-    if month_num >= FY_START_MONTH:
+    if month_num >= fy_start_month:
         year = fiscal_year
     else:
         year = fiscal_year + 1
@@ -72,10 +80,11 @@ async def budget_upload(
     if not org_id:
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 
-    # Default fiscal year: April start → current FY
+    # Default fiscal year: use org's fy_start_month
+    fy_start_month = await _get_fy_start_month(db, org_id)
     today = date.today()
     if fiscal_year is None:
-        fiscal_year = today.year if today.month >= FY_START_MONTH else today.year - 1
+        fiscal_year = today.year if today.month >= fy_start_month else today.year - 1
 
     # Load valid account codes and reporting_category from account_mappings
     result = await db.execute(
@@ -142,7 +151,7 @@ async def budget_upload(
             except ValueError:
                 rows_rejected.append({"row": row_index, "reason": f"Non-numeric value in column '{month_col}': {val[:50]}"})
                 continue
-            period = _period_for_fy_month(fiscal_year, month_col)
+            period = _period_for_fy_month(fiscal_year, month_col, fy_start_month)
             total_budget_loaded += amount
             await db.execute(
                 text("""
@@ -265,11 +274,11 @@ async def actual_vs_budget(
 # HELPERS: Default period and YYYY-MM list
 # ──────────────────────────────────────────────────────────────────────
 
-def _default_period_start() -> date:
-    """1 April of current FY (April start)."""
+def _default_period_start(fy_start_month: int) -> date:
+    """1st of fy_start_month in the current FY."""
     today = date.today()
-    fy_year = today.year if today.month >= FY_START_MONTH else today.year - 1
-    return date(fy_year, FY_START_MONTH, 1)
+    fy_year = today.year if today.month >= fy_start_month else today.year - 1
+    return date(fy_year, fy_start_month, 1)
 
 
 def _months_yyyy_mm_in_range(period_start: date, period_end: date) -> list[str]:
@@ -316,8 +325,9 @@ async def avb_kpis(
     if not org_id:
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 
+    fy_start_month = await _get_fy_start_month(db, org_id)
     today = date.today()
-    ps = period_start if period_start is not None else _default_period_start()
+    ps = period_start if period_start is not None else _default_period_start(fy_start_month)
     pe = period_end if period_end is not None else today
     if ps > pe:
         ps, pe = pe, ps
@@ -1030,3 +1040,39 @@ async def balance_sheet(
         "total_equity": round(total_equity, 2),
         "net_assets": round(total_assets - total_liabilities + total_equity, 2),
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# REPORT SETTINGS (FY start month)
+# ──────────────────────────────────────────────────────────────────────
+
+@router.get("/reports/settings")
+async def get_report_settings(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return report settings for the current organisation."""
+    org_id = str(current_user.organisation_id)
+    fy_start_month = await _get_fy_start_month(db, org_id)
+    return {"fy_start_month": fy_start_month}
+
+
+@router.patch("/reports/settings")
+async def update_report_settings(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update report settings for the current organisation."""
+    org_id = str(current_user.organisation_id)
+    fy_start_month = payload.get("fy_start_month")
+    if fy_start_month is None:
+        raise HTTPException(status_code=422, detail="fy_start_month is required")
+    if not isinstance(fy_start_month, int) or fy_start_month < 1 or fy_start_month > 12:
+        raise HTTPException(status_code=422, detail="fy_start_month must be an integer between 1 and 12")
+    await db.execute(
+        text("UPDATE organisations SET fy_start_month = :fy_start_month WHERE id = :org_id"),
+        {"fy_start_month": fy_start_month, "org_id": org_id},
+    )
+    await db.commit()
+    return {"fy_start_month": fy_start_month}
