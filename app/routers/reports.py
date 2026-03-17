@@ -390,7 +390,7 @@ async def avb_kpis(
     gross_margin_variance_pct = gross_margin_actual_pct - gross_margin_budget_pct
 
     opex_actual = sum(_act(c) for c in _OPEX_CATEGORIES)
-    opex_budget = sum(_bud(c) for c in _OPEX_CATEGORIES)
+    opex_budget = -sum(_bud(c) for c in _OPEX_CATEGORIES)
     ebitda_actual = gross_profit_actual + opex_actual
     ebitda_budget = gross_profit_budget + opex_budget
     ebitda_variance = ebitda_actual - ebitda_budget
