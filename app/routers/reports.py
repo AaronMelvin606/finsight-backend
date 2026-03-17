@@ -256,6 +256,7 @@ async def actual_vs_budget(
                 AND bm_agg.account_code    = am.account_code
             WHERE am.organisation_id = :org_id
               AND am.include_in_pnl  = TRUE
+              AND am.statement_type  = 'profit_and_loss'
               AND (fli_agg.net_amount IS NOT NULL OR bm_agg.total_budget IS NOT NULL)
             ORDER BY am.reporting_category, am.account_code
         """),
@@ -547,7 +548,8 @@ async def avb_bridge(
                 AND bm_agg.account_code    = am.account_code
             WHERE am.organisation_id = :org_id
               AND am.include_in_pnl  = TRUE
-              AND (fli_agg.net_amount IS NOT NULL OR b_agg.total_budget IS NOT NULL)
+              AND am.statement_type  = 'profit_and_loss'
+              AND (fli_agg.net_amount IS NOT NULL OR bm_agg.total_budget IS NOT NULL)
             GROUP BY am.reporting_category
         """),
         {"org_id": org_id, "period_start": period_start, "period_end": period_end},
@@ -641,6 +643,7 @@ async def avb_summary(
                 AND bm_agg.account_code    = am.account_code
             WHERE am.organisation_id = :org_id
               AND am.include_in_pnl  = TRUE
+              AND am.statement_type  = 'profit_and_loss'
               AND (fli_agg.net_amount IS NOT NULL OR bm_agg.total_budget IS NOT NULL)
             GROUP BY am.reporting_category
             ORDER BY am.reporting_category
@@ -692,6 +695,7 @@ async def monthly_trend(
               AND fli.period_start   >= :period_start
               AND fli.period_end     <= :period_end
               AND am.include_in_pnl   = TRUE
+              AND am.statement_type   = 'profit_and_loss'
             GROUP BY fli.period_start, am.reporting_category
             ORDER BY fli.period_start, am.reporting_category
         """),
@@ -737,6 +741,7 @@ async def actuals(
           AND fli.report_type     = 'ProfitAndLoss'
           AND fli.period_start   >= :period_start
           AND fli.period_end     <= :period_end
+          AND am.statement_type  = 'profit_and_loss'
     """
     params: dict = {
         "org_id": org_id,
