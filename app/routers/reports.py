@@ -469,25 +469,25 @@ async def avb_bridge(
                   AND period_end     <= :period_end
                 GROUP BY organisation_id, xero_account_id
             ),
-            b_agg AS (
-                SELECT organisation_id, account_code, SUM(amount) AS total_budget
-                FROM budgets
+            bm_agg AS (
+                SELECT organisation_id, account_code, SUM(budget_amount) AS total_budget
+                FROM budget_monthly
                 WHERE organisation_id = :org_id
-                  AND period_start >= :period_start
-                  AND period_end   <= :period_end
+                  AND period >= TO_CHAR(CAST(:period_start AS DATE), 'YYYY-MM')
+                  AND period <= TO_CHAR(CAST(:period_end AS DATE), 'YYYY-MM')
                 GROUP BY organisation_id, account_code
             )
             SELECT
                 am.reporting_category,
                 COALESCE(SUM(fli_agg.net_amount), 0)      AS actual,
-                COALESCE(SUM(b_agg.total_budget), 0)      AS budget
+                COALESCE(SUM(bm_agg.total_budget), 0)     AS budget
             FROM account_mappings am
             LEFT JOIN fli_agg
                 ON  fli_agg.organisation_id = am.organisation_id
                 AND fli_agg.xero_account_id = am.xero_account_id
-            LEFT JOIN b_agg
-                ON  b_agg.organisation_id = am.organisation_id
-                AND b_agg.account_code    = am.account_code
+            LEFT JOIN bm_agg
+                ON  bm_agg.organisation_id = am.organisation_id
+                AND bm_agg.account_code    = am.account_code
             WHERE am.organisation_id = :org_id
               AND am.include_in_pnl  = TRUE
               AND (fli_agg.net_amount IS NOT NULL OR b_agg.total_budget IS NOT NULL)
