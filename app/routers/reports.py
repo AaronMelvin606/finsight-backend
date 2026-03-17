@@ -402,6 +402,13 @@ async def avb_kpis(
         (revenue_actual_ytd / revenue_budget_ytd * 100) if revenue_budget_ytd != 0 else 0.0
     )
 
+    cost_ratio_actual = (
+        (opex_actual / revenue_actual_ytd * 100) if revenue_actual_ytd != 0 else 0.0
+    )
+    cost_ratio_budget = (
+        (opex_budget / revenue_budget_ytd * 100) if revenue_budget_ytd != 0 else 0.0
+    )
+
     # Balance sheet data not yet in financial_line_items
     cash_position = 0.0
     debtor_days = 0
@@ -427,6 +434,8 @@ async def avb_kpis(
         "budget_achievement_pct": round(budget_achievement_pct, 2),
         "opex_actual": round(opex_actual, 2),
         "opex_budget": round(opex_budget, 2),
+        "cost_ratio_actual": round(cost_ratio_actual, 2),
+        "cost_ratio_budget": round(cost_ratio_budget, 2),
         "cash_position": round(cash_position, 2),
         "debtor_days": int(debtor_days),
     }
