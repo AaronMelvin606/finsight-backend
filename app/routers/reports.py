@@ -745,11 +745,11 @@ async def data_health(
                 COUNT(DISTINCT am.account_code) AS pnl_accounts,
                 COUNT(DISTINCT b.account_code)  AS accounts_with_budget
             FROM account_mappings am
-            LEFT JOIN budgets b
+            LEFT JOIN budget_monthly b
                 ON  b.organisation_id = am.organisation_id
                 AND b.account_code    = am.account_code
             WHERE am.organisation_id = :org_id
-              AND am.include_in_pnl  = TRUE
+              AND am.statement_type  = 'profit_and_loss'
               AND am.is_mapped       = TRUE
         """),
         {"org_id": org_id},
