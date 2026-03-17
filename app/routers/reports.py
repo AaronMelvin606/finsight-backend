@@ -390,7 +390,7 @@ async def avb_kpis(
         (revenue_variance / abs(revenue_budget_ytd) * 100) if revenue_budget_ytd != 0 else 0.0
     )
 
-    gross_profit_actual = revenue_actual_ytd - cost_of_sales_actual
+    gross_profit_actual = revenue_actual_ytd + cost_of_sales_actual
     gross_profit_budget = revenue_budget_ytd - cost_of_sales_budget
     gross_margin_actual_pct = (
         (gross_profit_actual / revenue_actual_ytd * 100) if revenue_actual_ytd != 0 else 0.0
