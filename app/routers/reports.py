@@ -619,18 +619,17 @@ async def monthly_trend(
                 fli.period_start                          AS month,
                 am.reporting_category,
                 COALESCE(SUM(fli.net_amount), 0)         AS actual,
-                COALESCE(SUM(b.amount), 0)               AS budget,
+                COALESCE(SUM(bm.budget_amount), 0)       AS budget,
                 COALESCE(SUM(fli.net_amount), 0)
-                    - COALESCE(SUM(b.amount), 0)         AS variance
+                    - COALESCE(SUM(bm.budget_amount), 0) AS variance
             FROM financial_line_items fli
             JOIN account_mappings am
                 ON  am.organisation_id = fli.organisation_id
                 AND am.xero_account_id = fli.xero_account_id
-            LEFT JOIN budgets b
-                ON  b.organisation_id = am.organisation_id
-                AND b.account_code    = am.account_code
-                AND b.period_start    = fli.period_start
-                AND b.period_end      = fli.period_end
+            LEFT JOIN budget_monthly bm
+                ON  bm.organisation_id = am.organisation_id
+                AND bm.account_code    = am.account_code
+                AND bm.period          = TO_CHAR(fli.period_start, 'YYYY-MM')
             WHERE fli.organisation_id = :org_id
               AND fli.report_type     = 'ProfitAndLoss'
               AND fli.period_start   >= :period_start
