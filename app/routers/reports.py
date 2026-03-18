@@ -21,6 +21,7 @@ import csv
 from app.core.database import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
+from app.services.fiscal_year_service import get_fy_context, generate_fy_rows
 
 router = APIRouter()
 
@@ -1062,6 +1063,16 @@ async def get_report_settings(
     return {"fy_start_month": fy_start_month}
 
 
+@router.get("/reports/fy-context")
+async def get_fy_context_endpoint(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return fiscal year context for the current organisation."""
+    org_id = str(current_user.organisation_id)
+    return await get_fy_context(db, org_id)
+
+
 @router.patch("/reports/settings")
 async def update_report_settings(
     payload: dict,
@@ -1080,4 +1091,5 @@ async def update_report_settings(
         {"fy_start_month": fy_start_month, "org_id": org_id},
     )
     await db.commit()
+    await generate_fy_rows(db, org_id, fy_start_month)
     return {"fy_start_month": fy_start_month}
