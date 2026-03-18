@@ -1043,7 +1043,7 @@ async def balance_sheet(
         "total_assets": round(total_assets, 2),
         "total_liabilities": round(total_liabilities, 2),
         "total_equity": round(total_equity, 2),
-        "net_assets": round(total_assets - total_liabilities + total_equity, 2),
+        "net_assets": round(total_assets - total_liabilities, 2),
     }
 
 
