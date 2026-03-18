@@ -969,82 +969,133 @@ async def balance_sheet(
         first_of_month = today.replace(day=1)
         aod = first_of_month - timedelta(days=1)
 
-    # Fetch all BS line items at the most recent period on or before as_of_date
-    result = await db.execute(
-        text("""
-            SELECT
-                am.reporting_category,
-                am.account_code,
-                am.account_name,
-                fli.net_amount AS balance
-            FROM financial_line_items fli
-            JOIN account_mappings am
-              ON fli.organisation_id = am.organisation_id
-              AND fli.xero_account_id = am.xero_account_id
-            WHERE fli.organisation_id = :org_id
-              AND fli.report_type = 'BalanceSheet'
-              AND fli.period_end = (
-                SELECT MAX(period_end)
-                FROM financial_line_items
-                WHERE organisation_id = :org_id
-                  AND report_type = 'BalanceSheet'
-                  AND period_end <= :as_of_date
-              )
-            ORDER BY am.reporting_category, am.account_name
-        """),
-        {"org_id": org_id, "as_of_date": aod},
-    )
-    rows = result.mappings().all()
+    # Prior month: last day of the month immediately before as_of_date
+    prior_first = aod.replace(day=1)
+    prior_month_date = prior_first - timedelta(days=1)
 
-    # Group rows by reporting_category
+    bs_query = text("""
+        SELECT
+            am.reporting_category,
+            am.account_code,
+            am.account_name,
+            fli.net_amount AS balance
+        FROM financial_line_items fli
+        JOIN account_mappings am
+          ON fli.organisation_id = am.organisation_id
+          AND fli.xero_account_id = am.xero_account_id
+        WHERE fli.organisation_id = :org_id
+          AND fli.report_type = 'BalanceSheet'
+          AND fli.period_end = (
+            SELECT MAX(period_end)
+            FROM financial_line_items
+            WHERE organisation_id = :org_id
+              AND report_type = 'BalanceSheet'
+              AND period_end <= :as_of_date
+          )
+        ORDER BY am.reporting_category, am.account_name
+    """)
+
+    # Fetch current and prior month data
+    current_result = await db.execute(bs_query, {"org_id": org_id, "as_of_date": aod})
+    current_rows = current_result.mappings().all()
+
+    prior_result = await db.execute(bs_query, {"org_id": org_id, "as_of_date": prior_month_date})
+    prior_rows = prior_result.mappings().all()
+
+    # Build balance dicts keyed by (reporting_category, account_code)
+    current_balances: dict[str, float] = {}
+    prior_balances: dict[str, float] = {}
+
+    # Group current rows by reporting_category
     accounts_by_cat: dict[str, list[dict]] = {}
-    for row in rows:
+    for row in current_rows:
         cat = row["reporting_category"]
+        code = row["account_code"] or ""
+        bal = round(float(row["balance"] or 0), 2)
+        current_balances[code] = bal
         accounts_by_cat.setdefault(cat, []).append({
-            "account_code": row["account_code"] or "",
+            "account_code": code,
             "account_name": row["account_name"] or "",
-            "balance": round(float(row["balance"] or 0), 2),
+            "balance": bal,
         })
 
-    # Build sections
+    for row in prior_rows:
+        code = row["account_code"] or ""
+        prior_balances[code] = round(float(row["balance"] or 0), 2)
+
+    # Build sections with current, prior, and movement
     sections = []
     total_assets = 0.0
     total_liabilities = 0.0
     total_equity = 0.0
+    prior_total_assets = 0.0
+    prior_total_liabilities = 0.0
+    prior_total_equity = 0.0
 
     for section_def in _BS_SECTIONS:
         categories = []
         section_total = 0.0
+        section_prior_total = 0.0
         for cat_def in section_def["categories"]:
             cat_accounts = accounts_by_cat.get(cat_def["key"], [])
-            cat_total = round(sum(a["balance"] for a in cat_accounts), 2)
+            cat_total = 0.0
+            cat_prior_total = 0.0
+            enriched_accounts = []
+            for a in cat_accounts:
+                prior_bal = prior_balances.get(a["account_code"], 0.0)
+                movement = round(a["balance"] - prior_bal, 2)
+                enriched_accounts.append({
+                    **a,
+                    "prior_balance": prior_bal,
+                    "movement": movement,
+                })
+                cat_total += a["balance"]
+                cat_prior_total += prior_bal
+            cat_total = round(cat_total, 2)
+            cat_prior_total = round(cat_prior_total, 2)
             section_total += cat_total
+            section_prior_total += cat_prior_total
             categories.append({
                 "category_key": cat_def["key"],
                 "category_label": cat_def["label"],
-                "accounts": cat_accounts,
+                "accounts": enriched_accounts,
                 "total": cat_total,
+                "prior_total": cat_prior_total,
+                "movement": round(cat_total - cat_prior_total, 2),
             })
         section_total = round(section_total, 2)
+        section_prior_total = round(section_prior_total, 2)
         sections.append({
             "name": section_def["name"],
             "categories": categories,
             "total": section_total,
+            "prior_total": section_prior_total,
+            "movement": round(section_total - section_prior_total, 2),
         })
         if section_def["name"] == "Assets":
             total_assets = section_total
+            prior_total_assets = section_prior_total
         elif section_def["name"] == "Liabilities":
             total_liabilities = section_total
+            prior_total_liabilities = section_prior_total
         elif section_def["name"] == "Equity":
             total_equity = section_total
+            prior_total_equity = section_prior_total
 
     return {
         "as_of_date": str(aod),
+        "prior_as_of_date": str(prior_month_date),
         "sections": sections,
         "total_assets": round(total_assets, 2),
         "total_liabilities": round(total_liabilities, 2),
         "total_equity": round(total_equity, 2),
         "net_assets": round(total_assets - total_liabilities, 2),
+        "prior_total_assets": round(prior_total_assets, 2),
+        "prior_total_liabilities": round(prior_total_liabilities, 2),
+        "prior_total_equity": round(prior_total_equity, 2),
+        "movement_assets": round(total_assets - prior_total_assets, 2),
+        "movement_liabilities": round(total_liabilities - prior_total_liabilities, 2),
+        "movement_equity": round(total_equity - prior_total_equity, 2),
     }
 
 
