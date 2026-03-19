@@ -56,8 +56,11 @@ class Settings(BaseSettings):
     # Demo Dashboard URL (Streamlit)
     DEMO_DASHBOARD_URL: Optional[str] = None
     
-    # OpenAI (for AI commentary in dashboards)
+    # OpenAI (for AI commentary in dashboards — legacy)
     OPENAI_API_KEY: Optional[str] = None
+
+    # Anthropic (for Claude AI commentary generation)
+    ANTHROPIC_API_KEY: Optional[str] = None
     
     # File Storage (for CSV uploads - future)
     AWS_ACCESS_KEY_ID: Optional[str] = None

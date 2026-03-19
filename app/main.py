@@ -21,7 +21,7 @@ import logging
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.core.limiter import limiter
-from app.routers import auth, users, organisations, subscriptions, dashboards, demo, financial_data, mappings, budgets, reports
+from app.routers import auth, users, organisations, subscriptions, dashboards, demo, financial_data, mappings, budgets, reports, commentary
 from app.routers.integrations import xero as xero_integration
 
 logger = logging.getLogger(__name__)
@@ -222,6 +222,7 @@ app.include_router(xero_integration.router, prefix="/api/v1/integrations/xero", 
 app.include_router(mappings.router, prefix="/api/v1", tags=["Mappings"])
 app.include_router(budgets.router, prefix="/api/v1", tags=["Budgets"])
 app.include_router(reports.router, prefix="/api/v1", tags=["Reports"])
+app.include_router(commentary.router, prefix="/api/v1", tags=["Commentary"])
 
 
 @app.get("/test-register", tags=["Debug"])
