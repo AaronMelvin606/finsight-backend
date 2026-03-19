@@ -13,11 +13,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from contextlib import asynccontextmanager
 import logging
 
 from app.core.config import settings
 from app.core.database import engine, Base
+from app.core.limiter import limiter
 from app.routers import auth, users, organisations, subscriptions, dashboards, demo, financial_data, mappings, budgets, reports
 from app.routers.integrations import xero as xero_integration
 
@@ -97,6 +100,10 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan
 )
+
+# Attach rate limiter to app
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Allowed origins for CORS
 origins = [

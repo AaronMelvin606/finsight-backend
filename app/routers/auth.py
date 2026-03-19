@@ -4,7 +4,7 @@ FinSight AI - Authentication Router
 API endpoints for user authentication with organisation context.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
@@ -39,6 +39,8 @@ from app.services.auth_service import (
     create_tokens_for_user,
     get_user_by_email,
 )
+
+from app.core.limiter import limiter
 
 import sentry_sdk
 import uuid
@@ -94,7 +96,9 @@ def _check_registration_allowed(email: str) -> None:
 
 
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
 async def register(
+    request: Request,
     user_data: UserRegister,
     db: AsyncSession = Depends(get_db)
 ):
@@ -173,7 +177,9 @@ async def register(
 
 
 @router.post("/login", response_model=Token)
+@limiter.limit("10/minute")
 async def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
 ):
@@ -228,7 +234,9 @@ async def login(
 
 
 @router.post("/login/json", response_model=Token)
+@limiter.limit("10/minute")
 async def login_json(
+    request: Request,
     credentials: UserLogin,
     db: AsyncSession = Depends(get_db)
 ):
@@ -369,7 +377,9 @@ async def logout(
 
 
 @router.post("/password-reset")
+@limiter.limit("5/minute")
 async def request_password_reset(
+    request: Request,
     data: PasswordReset,
     db: AsyncSession = Depends(get_db)
 ):
@@ -393,7 +403,9 @@ async def request_password_reset(
 
 
 @router.post("/password-reset/confirm")
+@limiter.limit("5/minute")
 async def confirm_password_reset(
+    request: Request,
     data: PasswordResetConfirm,
     db: AsyncSession = Depends(get_db)
 ):
@@ -424,7 +436,9 @@ async def confirm_password_reset(
 # ---------------------------------------------------------------------------
 
 @router.post("/register-simple")
+@limiter.limit("5/minute")
 async def register_simple(
+    request: Request,
     payload: dict,
     db: AsyncSession = Depends(get_db)
 ):
@@ -508,7 +522,9 @@ async def register_simple(
 
 
 @router.post("/login-simple")
+@limiter.limit("10/minute")
 async def login_simple(
+    request: Request,
     payload: dict,
     db: AsyncSession = Depends(get_db)
 ):
