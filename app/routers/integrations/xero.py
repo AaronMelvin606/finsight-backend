@@ -25,6 +25,7 @@ import json
 
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.services.onboarding_service import run_onboarding
 
 logger = logging.getLogger(__name__)
 
@@ -782,6 +783,13 @@ async def xero_callback(
     await db.commit()
 
     logger.info(f"[XERO] Connected org={org_id} to tenant={tenant_name} ({tenant_id})")
+
+    # Run onboarding: map accounts, generate FY rows, initial sync
+    try:
+        await run_onboarding(db, org_id)
+    except Exception as e:
+        logger.error(f"[XERO] Onboarding failed for org={org_id}: {e}")
+
     return RedirectResponse(
         url=f"{FRONTEND_URL}/dashboard?xero_connected=true"
     )
