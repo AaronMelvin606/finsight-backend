@@ -208,20 +208,20 @@ async def actual_vs_budget(
     result = await db.execute(
         text("""
             WITH fli_agg AS (
-                -- Pre-aggregate actuals to one row per (xero_account_id)
-                -- across the full requested period before joining to mappings.
-                -- This prevents fan-out when account_mappings has multiple rows
-                -- for the same xero_account_id.
                 SELECT
-                    organisation_id,
-                    xero_account_id,
-                    SUM(net_amount) AS net_amount
-                FROM financial_line_items
-                WHERE organisation_id = :org_id
-                  AND report_type     = 'ProfitAndLoss'
-                  AND period_start   >= :period_start
-                  AND period_end     <= :period_end
-                GROUP BY organisation_id, xero_account_id
+                    fli.organisation_id,
+                    fli.xero_account_id,
+                    SUM(fli.net_amount) AS net_amount
+                FROM financial_line_items fli
+                JOIN account_mappings am
+                    ON  am.organisation_id = fli.organisation_id
+                    AND am.xero_account_id = fli.xero_account_id
+                WHERE fli.organisation_id = :org_id
+                  AND fli.report_type     = 'ProfitAndLoss'
+                  AND fli.period_start   >= :period_start
+                  AND fli.period_end     <= :period_end
+                  AND am.statement_type   = 'profit_and_loss'
+                GROUP BY fli.organisation_id, fli.xero_account_id
             ),
             bm_agg AS (
                 -- Pre-aggregate budgets to one row per account_code
@@ -518,15 +518,19 @@ async def avb_bridge(
         text("""
             WITH fli_agg AS (
                 SELECT
-                    organisation_id,
-                    xero_account_id,
-                    SUM(net_amount) AS net_amount
-                FROM financial_line_items
-                WHERE organisation_id = :org_id
-                  AND report_type     = 'ProfitAndLoss'
-                  AND period_start   >= :period_start
-                  AND period_end     <= :period_end
-                GROUP BY organisation_id, xero_account_id
+                    fli.organisation_id,
+                    fli.xero_account_id,
+                    SUM(fli.net_amount) AS net_amount
+                FROM financial_line_items fli
+                JOIN account_mappings am
+                    ON  am.organisation_id = fli.organisation_id
+                    AND am.xero_account_id = fli.xero_account_id
+                WHERE fli.organisation_id = :org_id
+                  AND fli.report_type     = 'ProfitAndLoss'
+                  AND fli.period_start   >= :period_start
+                  AND fli.period_end     <= :period_end
+                  AND am.statement_type   = 'profit_and_loss'
+                GROUP BY fli.organisation_id, fli.xero_account_id
             ),
             bm_agg AS (
                 SELECT organisation_id, account_code, SUM(budget_amount) AS total_budget
@@ -604,15 +608,19 @@ async def avb_summary(
         text("""
             WITH fli_agg AS (
                 SELECT
-                    organisation_id,
-                    xero_account_id,
-                    SUM(net_amount) AS net_amount
-                FROM financial_line_items
-                WHERE organisation_id = :org_id
-                  AND report_type     = 'ProfitAndLoss'
-                  AND period_start   >= :period_start
-                  AND period_end     <= :period_end
-                GROUP BY organisation_id, xero_account_id
+                    fli.organisation_id,
+                    fli.xero_account_id,
+                    SUM(fli.net_amount) AS net_amount
+                FROM financial_line_items fli
+                JOIN account_mappings am
+                    ON  am.organisation_id = fli.organisation_id
+                    AND am.xero_account_id = fli.xero_account_id
+                WHERE fli.organisation_id = :org_id
+                  AND fli.report_type     = 'ProfitAndLoss'
+                  AND fli.period_start   >= :period_start
+                  AND fli.period_end     <= :period_end
+                  AND am.statement_type   = 'profit_and_loss'
+                GROUP BY fli.organisation_id, fli.xero_account_id
             ),
             bm_agg AS (
                 SELECT organisation_id, account_code, SUM(budget_amount) AS total_budget
