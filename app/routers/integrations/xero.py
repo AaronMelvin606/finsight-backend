@@ -51,7 +51,7 @@ XERO_SCOPES = (
 )
 
 # After successful OAuth, redirect user here
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://www.finsightai.tech")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://finsightai-dashboard.netlify.app")
 
 
 # ---------------------------------------------------------------------------
@@ -684,7 +684,7 @@ async def xero_callback(
     if error:
         logger.error(f"[XERO] OAuth error: {error}")
         return RedirectResponse(
-            url=f"{FRONTEND_URL}/dashboard?xero_error={error}"
+            url=f"{FRONTEND_URL}/?xero_error={error}"
         )
 
     if not code:
@@ -713,7 +713,7 @@ async def xero_callback(
     if resp.status_code != 200:
         logger.error(f"[XERO] Token exchange failed: {resp.status_code} {resp.text}")
         return RedirectResponse(
-            url=f"{FRONTEND_URL}/dashboard?xero_error=token_exchange_failed"
+            url=f"{FRONTEND_URL}/?xero_error=token_exchange_failed"
         )
 
     tokens = resp.json()
@@ -733,13 +733,13 @@ async def xero_callback(
     if conn_resp.status_code != 200:
         logger.error(f"[XERO] Failed to fetch connections: {conn_resp.status_code}")
         return RedirectResponse(
-            url=f"{FRONTEND_URL}/dashboard?xero_error=connections_failed"
+            url=f"{FRONTEND_URL}/?xero_error=connections_failed"
         )
 
     connections = conn_resp.json()
     if not connections:
         return RedirectResponse(
-            url=f"{FRONTEND_URL}/dashboard?xero_error=no_tenants"
+            url=f"{FRONTEND_URL}/?xero_error=no_tenants"
         )
 
     # Use first tenant
@@ -791,7 +791,7 @@ async def xero_callback(
         logger.error(f"[XERO] Onboarding failed for org={org_id}: {e}")
 
     return RedirectResponse(
-        url=f"{FRONTEND_URL}/dashboard?xero_connected=true"
+        url=f"{FRONTEND_URL}/?xero_connected=true"
     )
 
 
