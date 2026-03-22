@@ -40,6 +40,7 @@ from app.services.auth_service import (
     create_tokens_for_user,
     get_user_by_email,
 )
+from app.services.email_service import send_password_reset_email
 
 from app.core.limiter import limiter
 
@@ -409,7 +410,6 @@ async def request_password_reset(
 ):
     """
     Request a password reset email.
-    Note: Email sending not implemented yet.
     """
     result = await db.execute(select(User).where(User.email == data.email))
     user = result.scalar_one_or_none()
@@ -419,7 +419,16 @@ async def request_password_reset(
         user.password_reset_token = reset_token
         user.password_reset_expires = datetime.now(timezone.utc)
         await db.commit()
-        # TODO: Send email with reset link
+
+        email_sent = send_password_reset_email(
+            to_email=data.email,
+            reset_token=reset_token,
+        )
+        if not email_sent:
+            logger.warning(
+                f"[AUTH] Reset token generated but email failed "
+                f"for {data.email}"
+            )
 
     return {
         "message": "If an account with that email exists, a password reset link has been sent."
