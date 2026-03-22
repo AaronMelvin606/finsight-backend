@@ -29,6 +29,7 @@ from app.schemas.auth import (
     TokenRefresh,
     PasswordReset,
     PasswordResetConfirm,
+    PasswordChange,
     UserResponse,
     UserWithOrganisation,
     Token,
@@ -376,6 +377,27 @@ async def logout(
     Note: With JWT, actual logout is handled client-side by deleting the token.
     """
     return {"message": "Successfully logged out"}
+
+
+@router.patch("/change-password")
+@limiter.limit("5/minute")
+async def change_password(
+    request: Request,
+    data: PasswordChange,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Allows an authenticated user to change their password."""
+    if not verify_password(data.current_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+
+    current_user.hashed_password = get_password_hash(data.new_password)
+    await db.commit()
+
+    return {"message": "Password updated successfully"}
 
 
 @router.post("/password-reset")
