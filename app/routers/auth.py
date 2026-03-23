@@ -613,3 +613,40 @@ async def login_simple(
 
     logger.info(f"[LOGIN-SIMPLE] Successful login for email={email}")
     return {"access_token": access_token, "token_type": "bearer"}
+
+
+@router.get("/debug-email-config")
+async def debug_email_config():
+    """
+    Temporary diagnostic endpoint — remove after testing.
+    Returns env var status and attempts a test send.
+    """
+    import os
+    import resend
+
+    api_key = os.getenv("RESEND_API_KEY")
+
+    result = {
+        "resend_api_key_set": bool(api_key),
+        "resend_api_key_prefix": api_key[:8] if api_key else "NOT SET",
+        "resend_api_key_length": len(api_key) if api_key else 0,
+    }
+
+    if api_key:
+        resend.api_key = api_key
+        try:
+            r = resend.Emails.send({
+                "from": "FinSight AI <hello@finsightai.tech>",
+                "to": ["hello@finsightai.tech"],
+                "subject": "FinSight AI — diagnostic test email",
+                "text": "If you receive this, Resend is working correctly.",
+            })
+            result["send_attempt"] = "success"
+            result["send_response"] = str(r)
+        except Exception as e:
+            result["send_attempt"] = "failed"
+            result["send_error"] = str(e)
+    else:
+        result["send_attempt"] = "skipped — no API key"
+
+    return result
