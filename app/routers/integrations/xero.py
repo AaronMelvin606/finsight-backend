@@ -1137,6 +1137,26 @@ async def xero_sync_budgets(
             "source": "xero",
         }
 
+    # --- DEBUG: log raw budget structure ---
+    for bi, budget in enumerate(budgets):
+        bl = budget.get("BudgetLines", [])
+        logger.info(
+            f"[BUDGET-SYNC][DEBUG] Budget[{bi}] Type={budget.get('Type')} "
+            f"Description={budget.get('Description')!r} BudgetLines={len(bl)}"
+        )
+        for li, line in enumerate(bl[:3]):
+            bals = line.get("BudgetBalances", [])
+            logger.info(
+                f"[BUDGET-SYNC][DEBUG]   Line[{li}] AccountID={line.get('AccountID')} "
+                f"AccountCode={line.get('AccountCode')!r} BudgetBalances={len(bals)}"
+            )
+            for bali, bal in enumerate(bals[:3]):
+                logger.info(
+                    f"[BUDGET-SYNC][DEBUG]     Bal[{bali}] Period={bal.get('Period')!r} "
+                    f"Amount={bal.get('Amount')!r}"
+                )
+    # --- END DEBUG ---
+
     # Build lookup of account_code -> (account_name, reporting_category)
     acct_result = await db.execute(
         text(
@@ -1150,6 +1170,7 @@ async def xero_sync_budgets(
         row.account_code: (row.account_name, row.reporting_category)
         for row in acct_result.fetchall()
     }
+    logger.info(f"[BUDGET-SYNC][DEBUG] account_mappings loaded: {len(acct_map)} entries")
 
     lines_synced = 0
     all_periods: set[str] = set()
@@ -1159,6 +1180,7 @@ async def xero_sync_budgets(
         for line in budget_lines:
             account_code = line.get("AccountCode", "")
             if not account_code:
+                logger.info(f"[BUDGET-SYNC][DEBUG] Skipping line with no AccountCode: AccountID={line.get('AccountID')}")
                 continue
 
             account_name, reporting_category = acct_map.get(
@@ -1168,10 +1190,15 @@ async def xero_sync_budgets(
             for bal in line.get("BudgetBalances", []):
                 amount = bal.get("Amount")
                 if not amount:
+                    logger.info(
+                        f"[BUDGET-SYNC][DEBUG] Skipping zero/null amount: "
+                        f"account_code={account_code} period={bal.get('Period')!r} amount={amount!r}"
+                    )
                     continue
 
                 period_raw = bal.get("Period", "")
                 if len(period_raw) < 7:
+                    logger.info(f"[BUDGET-SYNC][DEBUG] Skipping bad period: {period_raw!r}")
                     continue
                 period = period_raw[:7]  # "2025-04-01T00:00:00" → "2025-04"
                 all_periods.add(period)
