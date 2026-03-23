@@ -1137,8 +1137,39 @@ async def xero_sync_budgets(
             "source": "xero",
         }
 
-    # --- DEBUG: log raw budget structure ---
-    for bi, budget in enumerate(budgets):
+    # Fetch full detail for each budget (list endpoint omits BudgetLines)
+    budget_details = []
+    async with httpx.AsyncClient() as client:
+        for budget_summary in budgets:
+            budget_id = budget_summary.get("BudgetID")
+            if not budget_id:
+                continue
+            logger.info(f"[BUDGET-SYNC][DEBUG] Fetching detail for BudgetID={budget_id}")
+            detail_resp = await client.get(
+                f"{XERO_API_BASE}/Budgets/{budget_id}",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "xero-tenant-id": tenant_id,
+                    "Accept": "application/json",
+                },
+                timeout=30.0,
+            )
+            if detail_resp.status_code != 200:
+                logger.error(
+                    f"[BUDGET-SYNC] Detail fetch failed for {budget_id}: "
+                    f"{detail_resp.status_code} {detail_resp.text}"
+                )
+                continue
+            detail_data = detail_resp.json()
+            detail_budgets = detail_data.get("Budgets", [])
+            if detail_budgets:
+                detail = detail_budgets[0]
+                bl_count = len(detail.get("BudgetLines", []))
+                logger.info(f"[BUDGET-SYNC][DEBUG] Detail response BudgetLines={bl_count}")
+                budget_details.append(detail)
+
+    # --- DEBUG: log first budget detail structure ---
+    for bi, budget in enumerate(budget_details):
         bl = budget.get("BudgetLines", [])
         logger.info(
             f"[BUDGET-SYNC][DEBUG] Budget[{bi}] Type={budget.get('Type')} "
@@ -1175,7 +1206,7 @@ async def xero_sync_budgets(
     lines_synced = 0
     all_periods: set[str] = set()
 
-    for budget in budgets:
+    for budget in budget_details:
         budget_lines = budget.get("BudgetLines", [])
         for line in budget_lines:
             account_code = line.get("AccountCode", "")
