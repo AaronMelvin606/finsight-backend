@@ -4,7 +4,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-resend.api_key = os.getenv("RESEND_API_KEY")
 FRONTEND_URL = os.getenv(
     "FRONTEND_URL",
     "https://finsightai-dashboard.netlify.app"
@@ -18,6 +17,11 @@ def send_password_reset_email(to_email: str, reset_token: str) -> bool:
     Returns True on success, False on failure.
     Never raises — email failure must not break the API response.
     """
+    resend.api_key = os.getenv("RESEND_API_KEY")
+    if not resend.api_key:
+        logger.error("[EMAIL] RESEND_API_KEY not set")
+        return False
+
     reset_link = f"{FRONTEND_URL}/?token={reset_token}"
 
     try:
