@@ -418,8 +418,8 @@ async def request_password_reset(
     if user:
         reset_token = str(uuid.uuid4())
         user.password_reset_token = reset_token
-        user.password_reset_expires = datetime.now(timezone.utc) + timedelta(hours=1)
-        user.updated_at = datetime.now(timezone.utc)
+        user.password_reset_expires = datetime.utcnow() + timedelta(hours=1)
+        user.updated_at = datetime.utcnow()
         await db.commit()
 
         logger.info(f"[AUTH] Sending reset email to {data.email} via asyncio.to_thread")
