@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 from datetime import datetime, timezone, timedelta
+import asyncio
 
 from app.core.database import get_db
 from app.core.security import (
@@ -421,10 +422,13 @@ async def request_password_reset(
         user.updated_at = datetime.now(timezone.utc)
         await db.commit()
 
-        email_sent = send_password_reset_email(
+        logger.info(f"[AUTH] Sending reset email to {data.email} via asyncio.to_thread")
+        email_sent = await asyncio.to_thread(
+            send_password_reset_email,
             to_email=data.email,
             reset_token=reset_token,
         )
+        logger.info(f"[AUTH] Email send result for {data.email}: {email_sent}")
         if not email_sent:
             logger.warning(
                 f"[AUTH] Reset token generated but email failed "
