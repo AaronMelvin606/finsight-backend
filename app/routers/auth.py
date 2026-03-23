@@ -9,7 +9,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from app.core.database import get_db
 from app.core.security import (
@@ -417,7 +417,8 @@ async def request_password_reset(
     if user:
         reset_token = str(uuid.uuid4())
         user.password_reset_token = reset_token
-        user.password_reset_expires = datetime.now(timezone.utc)
+        user.password_reset_expires = datetime.now(timezone.utc) + timedelta(hours=1)
+        user.updated_at = datetime.now(timezone.utc)
         await db.commit()
 
         email_sent = send_password_reset_email(
@@ -613,40 +614,3 @@ async def login_simple(
 
     logger.info(f"[LOGIN-SIMPLE] Successful login for email={email}")
     return {"access_token": access_token, "token_type": "bearer"}
-
-
-@router.get("/debug-email-config")
-async def debug_email_config():
-    """
-    Temporary diagnostic endpoint — remove after testing.
-    Returns env var status and attempts a test send.
-    """
-    import os
-    import resend
-
-    api_key = os.getenv("RESEND_API_KEY")
-
-    result = {
-        "resend_api_key_set": bool(api_key),
-        "resend_api_key_prefix": api_key[:8] if api_key else "NOT SET",
-        "resend_api_key_length": len(api_key) if api_key else 0,
-    }
-
-    if api_key:
-        resend.api_key = api_key
-        try:
-            r = resend.Emails.send({
-                "from": "FinSight AI <hello@finsightai.tech>",
-                "to": ["hello@finsightai.tech"],
-                "subject": "FinSight AI — diagnostic test email",
-                "text": "If you receive this, Resend is working correctly.",
-            })
-            result["send_attempt"] = "success"
-            result["send_response"] = str(r)
-        except Exception as e:
-            result["send_attempt"] = "failed"
-            result["send_error"] = str(e)
-    else:
-        result["send_attempt"] = "skipped — no API key"
-
-    return result
