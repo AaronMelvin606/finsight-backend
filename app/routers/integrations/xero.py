@@ -47,6 +47,7 @@ XERO_SCOPES = (
     "accounting.reports.read "
     "accounting.contacts.read "
     "accounting.settings.read "
+    "accounting.budgets.read "
     "offline_access"
 )
 
@@ -1083,3 +1084,139 @@ async def xero_disconnect(
 
     logger.info(f"[XERO] Disconnected org={org_id}")
     return {"success": True, "message": "Xero disconnected successfully"}
+
+
+# ---------------------------------------------------------------------------
+# Sync Xero Budgets → budget_monthly
+# ---------------------------------------------------------------------------
+@router.post("/sync-budgets")
+async def xero_sync_budgets(
+    request: Request,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Fetch budgets from Xero and upsert into budget_monthly.
+    Requires accounting.budgets.read scope (user must re-auth if scope was added after initial connect).
+    """
+    org_id = _get_org_id(current_user)
+    logger.info(f"[BUDGET-SYNC] Starting for org={org_id}")
+
+    creds = await _refresh_tokens_if_needed(db, org_id)
+    access_token = creds["access_token"]
+    tenant_id = creds["xero_tenant_id"]
+
+    # Fetch budgets from Xero
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{XERO_API_BASE}/Budgets",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "xero-tenant-id": tenant_id,
+                "Accept": "application/json",
+            },
+            timeout=30.0,
+        )
+
+    if resp.status_code != 200:
+        logger.error(f"[BUDGET-SYNC] Xero API error: {resp.status_code} {resp.text}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Xero Budgets API returned {resp.status_code}",
+        )
+
+    data = resp.json()
+    budgets = data.get("Budgets", [])
+    logger.info(f"[BUDGET-SYNC] Found {len(budgets)} budgets")
+
+    if not budgets:
+        return {
+            "budgets_found": 0,
+            "lines_synced": 0,
+            "periods_covered": "",
+            "source": "xero",
+        }
+
+    # Build lookup of account_code -> (account_name, reporting_category)
+    acct_result = await db.execute(
+        text(
+            "SELECT account_code, account_name, reporting_category "
+            "FROM account_mappings "
+            "WHERE organisation_id = :org_id"
+        ),
+        {"org_id": org_id},
+    )
+    acct_map = {
+        row.account_code: (row.account_name, row.reporting_category)
+        for row in acct_result.fetchall()
+    }
+
+    lines_synced = 0
+    all_periods: set[str] = set()
+
+    for budget in budgets:
+        budget_lines = budget.get("BudgetLines", [])
+        for line in budget_lines:
+            account_code = line.get("AccountCode", "")
+            if not account_code:
+                continue
+
+            account_name, reporting_category = acct_map.get(
+                account_code, (f"Unknown ({account_code})", "UNMAPPED")
+            )
+
+            for bal in line.get("BudgetBalances", []):
+                amount = bal.get("Amount")
+                if not amount:
+                    continue
+
+                period_raw = bal.get("Period", "")
+                if len(period_raw) < 7:
+                    continue
+                period = period_raw[:7]  # "2025-04-01T00:00:00" → "2025-04"
+                all_periods.add(period)
+
+                await db.execute(
+                    text(
+                        "INSERT INTO budget_monthly "
+                        "  (id, organisation_id, account_code, account_name, "
+                        "   reporting_category, period, budget_amount, "
+                        "   created_at, updated_at) "
+                        "VALUES "
+                        "  (:id, :org_id, :account_code, :account_name, "
+                        "   :reporting_category, :period, :amount, "
+                        "   now(), now()) "
+                        "ON CONFLICT (organisation_id, account_code, period) "
+                        "DO UPDATE SET "
+                        "  budget_amount = EXCLUDED.budget_amount, "
+                        "  account_name = EXCLUDED.account_name, "
+                        "  reporting_category = EXCLUDED.reporting_category, "
+                        "  updated_at = now()"
+                    ),
+                    {
+                        "id": str(uuid.uuid4()),
+                        "org_id": org_id,
+                        "account_code": account_code,
+                        "account_name": account_name,
+                        "reporting_category": reporting_category,
+                        "period": period,
+                        "amount": float(amount),
+                    },
+                )
+                lines_synced += 1
+
+    await db.commit()
+
+    sorted_periods = sorted(all_periods)
+    periods_str = f"{sorted_periods[0]} to {sorted_periods[-1]}" if sorted_periods else ""
+    logger.info(
+        f"[BUDGET-SYNC] Synced {lines_synced} lines across "
+        f"{len(sorted_periods)} periods for org={org_id}"
+    )
+
+    return {
+        "budgets_found": len(budgets),
+        "lines_synced": lines_synced,
+        "periods_covered": periods_str,
+        "source": "xero",
+    }
