@@ -7,7 +7,39 @@ and auto-generation of fiscal_years / fiscal_year_months rows.
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from datetime import date
+from datetime import date, datetime
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+async def ensure_fiscal_months_current(db: AsyncSession, org_id: str) -> int:
+    """Mark fiscal_year_months rows as completed when their month has ended.
+
+    A month is considered completed when its month_period is before the
+    first day of the current UTC month (same logic as generate_fy_rows).
+
+    Returns the number of rows updated.
+    """
+    first_of_current_month = datetime.utcnow().date().replace(day=1).strftime("%Y-%m")
+
+    result = await db.execute(
+        text(
+            "UPDATE fiscal_year_months "
+            "SET is_completed = true "
+            "WHERE organisation_id = :org_id "
+            "  AND is_completed = false "
+            "  AND month_period < :cutoff"
+        ),
+        {"org_id": org_id, "cutoff": first_of_current_month},
+    )
+    updated = result.rowcount
+    if updated:
+        await db.commit()
+        logger.info(
+            f"[FISCAL] Marked {updated} fiscal month(s) complete for org={org_id}"
+        )
+    return updated
 
 
 async def get_current_fy(db: AsyncSession, org_id: str) -> dict:

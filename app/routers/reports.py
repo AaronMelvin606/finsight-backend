@@ -21,7 +21,7 @@ import csv
 from app.core.database import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
-from app.services.fiscal_year_service import get_fy_context, generate_fy_rows
+from app.services.fiscal_year_service import get_fy_context, generate_fy_rows, ensure_fiscal_months_current
 
 router = APIRouter()
 
@@ -1129,6 +1129,7 @@ async def get_fy_context_endpoint(
 ):
     """Return fiscal year context for the current organisation."""
     org_id = str(current_user.organisation_id)
+    await ensure_fiscal_months_current(db, org_id)
     return await get_fy_context(db, org_id)
 
 

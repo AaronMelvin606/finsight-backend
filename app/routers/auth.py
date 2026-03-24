@@ -42,6 +42,7 @@ from app.services.auth_service import (
     get_user_by_email,
 )
 from app.services.email_service import send_password_reset_email
+from app.services.fiscal_year_service import ensure_fiscal_months_current
 
 from app.core.limiter import limiter
 
@@ -203,6 +204,10 @@ async def login(
     user.last_login_at = datetime.utcnow()
     await db.commit()
 
+    # Ensure fiscal month completions are up-to-date
+    if user.organisation_id:
+        await ensure_fiscal_months_current(db, str(user.organisation_id))
+
     # Create tokens
     tokens = create_tokens_for_user(user)
 
@@ -259,6 +264,10 @@ async def login_json(
     # Update last login timestamp
     user.last_login_at = datetime.utcnow()
     await db.commit()
+
+    # Ensure fiscal month completions are up-to-date
+    if user.organisation_id:
+        await ensure_fiscal_months_current(db, str(user.organisation_id))
 
     # Create tokens
     tokens = create_tokens_for_user(user)
