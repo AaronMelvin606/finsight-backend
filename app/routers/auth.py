@@ -56,36 +56,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _check_registration_allowed(email: str) -> None:
+async def _check_registration_allowed(email: str, db: AsyncSession) -> None:
     """
-    Raise HTTP 403 if open registration is disabled and the email
-    is not on the allowed list.
+    Raise HTTP 403 if the email is not in the registration_allowlist table.
 
-    Controlled by the ALLOWED_REGISTRATION_EMAILS environment variable.
-    Set to a comma-separated list of permitted emails, e.g.:
-        aaron@finsightai.tech,demo@finsightai.tech
-
-    If the variable is empty or unset, ALL registration is blocked.
-    This is intentional — FinSight AI is invite-only during stealth.
+    FinSight AI is invite-only during stealth — emails must be added to
+    the allowlist via POST /admin/allowlist before registration is permitted.
     """
-    raw = getattr(settings, "ALLOWED_REGISTRATION_EMAILS", "") or ""
-    allowed = [e.strip().lower() for e in raw.split(",") if e.strip()]
-
-    if not allowed:
-        logger.warning(
-            f"[REGISTER] Blocked registration attempt for {email} — "
-            "ALLOWED_REGISTRATION_EMAILS is empty (invite-only mode active)"
-        )
-        sentry_sdk.capture_message(
-            f"Registration blocked (no allowlist configured): {email}",
-            level="warning",
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Registration is currently invite-only. Please contact hello@finsightai.tech.",
-        )
-
-    if email.lower() not in allowed:
+    result = await db.execute(
+        text(
+            "SELECT email FROM registration_allowlist "
+            "WHERE LOWER(email) = LOWER(:email)"
+        ),
+        {"email": email.strip()},
+    )
+    if not result.fetchone():
         logger.warning(
             f"[REGISTER] Blocked unauthorised registration attempt for {email}"
         )
@@ -95,7 +80,7 @@ def _check_registration_allowed(email: str) -> None:
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Registration is currently invite-only. Please contact hello@finsightai.tech.",
+            detail="Registration not permitted.",
         )
 
 
@@ -114,7 +99,7 @@ async def register(
         logger.info(f"[REGISTER] Starting registration for email={user_data.email}")
 
         # Allowlist check — blocks all unauthorised registration attempts
-        _check_registration_allowed(user_data.email)
+        await _check_registration_allowed(user_data.email, db)
 
         # Check if email already exists
         existing_user = await get_user_by_email(db, user_data.email)
@@ -506,7 +491,7 @@ async def register_simple(
         )
 
     # Allowlist check — same gate as the ORM register endpoint
-    _check_registration_allowed(email)
+    await _check_registration_allowed(email, db)
 
     # Check for existing email with raw SQL
     check_result = await db.execute(
