@@ -21,7 +21,12 @@ import csv
 from app.core.database import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
-from app.services.fiscal_year_service import get_fy_context, generate_fy_rows, ensure_fiscal_months_current
+from app.services.fiscal_year_service import (
+    get_fy_context,
+    generate_fy_rows,
+    ensure_fiscal_months_current,
+    get_last_closed_period_end_date,
+)
 
 router = APIRouter()
 
@@ -283,6 +288,21 @@ def _default_period_start(fy_start_month: int) -> date:
     return date(fy_year, fy_start_month, 1)
 
 
+def _calendar_last_completed_month_end() -> date:
+    """Last day of the calendar month immediately before the current month."""
+    today = date.today()
+    first_of_month = today.replace(day=1)
+    return first_of_month - timedelta(days=1)
+
+
+async def _resolve_default_period_end(db: AsyncSession, org_id: str) -> date:
+    """Default report period end: latest closed fiscal month, else last completed calendar month."""
+    last_closed = await get_last_closed_period_end_date(db, org_id)
+    if last_closed is not None:
+        return last_closed
+    return _calendar_last_completed_month_end()
+
+
 def _months_yyyy_mm_in_range(period_start: date, period_end: date) -> list[str]:
     """Return list of YYYY-MM strings for every month in [period_start, period_end]."""
     out: list[str] = []
@@ -319,7 +339,8 @@ async def avb_kpis(
 ):
     """
     Pre-calculated AvB KPIs. organisation_id from JWT only.
-    Optional period_start (default: 1 April current FY), period_end (default: today).
+    Optional period_start (default: 1 April current FY), period_end (default: latest closed
+    fiscal month, else last day of the previous completed calendar month).
     Actuals from financial_line_items + account_mappings (natural_sign applied);
     budget from budget_monthly. All calculations backend-only; divide-by-zero returns 0.0.
     """
@@ -328,9 +349,8 @@ async def avb_kpis(
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 
     fy_start_month = await _get_fy_start_month(db, org_id)
-    today = date.today()
     ps = period_start if period_start is not None else _default_period_start(fy_start_month)
-    pe = period_end if period_end is not None else today
+    pe = period_end if period_end is not None else await _resolve_default_period_end(db, org_id)
     if ps > pe:
         ps, pe = pe, ps
 
@@ -596,13 +616,19 @@ async def avb_bridge(
 
 @router.get("/reports/avb-summary")
 async def avb_summary(
-    period_start: date,
-    period_end: date,
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Summary by reporting category (REVENUE, COGS, OPEX)."""
     org_id = str(current_user.organisation_id)
+    fy_start_month = await _get_fy_start_month(db, org_id)
+    ps = period_start if period_start is not None else _default_period_start(fy_start_month)
+    pe = period_end if period_end is not None else await _resolve_default_period_end(db, org_id)
+    if ps > pe:
+        ps, pe = pe, ps
+    period_start, period_end = ps, pe
 
     result = await db.execute(
         text("""
@@ -674,13 +700,19 @@ async def avb_summary(
 
 @router.get("/reports/trend")
 async def monthly_trend(
-    period_start: date,
-    period_end: date,
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Monthly trend data for trend chart."""
     org_id = str(current_user.organisation_id)
+    fy_start_month = await _get_fy_start_month(db, org_id)
+    ps = period_start if period_start is not None else _default_period_start(fy_start_month)
+    pe = period_end if period_end is not None else await _resolve_default_period_end(db, org_id)
+    if ps > pe:
+        ps, pe = pe, ps
+    period_start, period_end = ps, pe
 
     result = await db.execute(
         text("""
@@ -725,14 +757,20 @@ async def monthly_trend(
 
 @router.get("/reports/actuals")
 async def actuals(
-    period_start: date,
-    period_end: date,
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
     reporting_category: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Actuals by account for a given period."""
     org_id = str(current_user.organisation_id)
+    fy_start_month = await _get_fy_start_month(db, org_id)
+    ps = period_start if period_start is not None else _default_period_start(fy_start_month)
+    pe = period_end if period_end is not None else await _resolve_default_period_end(db, org_id)
+    if ps > pe:
+        ps, pe = pe, ps
+    period_start, period_end = ps, pe
 
     query = """
         SELECT
@@ -966,16 +1004,14 @@ async def balance_sheet(
 ):
     """
     Balance Sheet report as of a given date.
-    Default as_of_date = last day of previous month.
+    Default as_of_date = latest closed fiscal month end, else last day of previous calendar month.
     """
     org_id = str(current_user.organisation_id)
 
     if as_of_date:
         aod = date.fromisoformat(as_of_date)
     else:
-        today = date.today()
-        first_of_month = today.replace(day=1)
-        aod = first_of_month - timedelta(days=1)
+        aod = await _resolve_default_period_end(db, org_id)
 
     # Prior month: last day of the month immediately before as_of_date
     prior_first = aod.replace(day=1)
