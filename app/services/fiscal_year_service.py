@@ -8,6 +8,7 @@ and auto-generation of fiscal_years / fiscal_year_months rows.
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from datetime import date, datetime
+from typing import Optional
 import logging
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,33 @@ async def ensure_fiscal_months_current(db: AsyncSession, org_id: str) -> int:
             f"[FISCAL] Marked {updated} fiscal month(s) complete for org={org_id}"
         )
     return updated
+
+
+async def get_last_closed_period_end_date(db: AsyncSession, org_id: str) -> Optional[date]:
+    """Latest calendar month-end among fiscal_year_months rows marked closed for this org."""
+    result = await db.execute(
+        text(
+            """
+            SELECT (
+                date_trunc('month', month_period::date) + interval '1 month - 1 day'
+            )::date AS month_end
+            FROM fiscal_year_months
+            WHERE organisation_id = :org_id AND is_closed = TRUE
+            ORDER BY month_end DESC
+            LIMIT 1
+            """
+        ),
+        {"org_id": org_id},
+    )
+    row = result.mappings().first()
+    if not row or row["month_end"] is None:
+        return None
+    v = row["month_end"]
+    if isinstance(v, date):
+        return v
+    if hasattr(v, "date"):
+        return v.date()
+    return None
 
 
 async def get_current_fy(db: AsyncSession, org_id: str) -> dict:
@@ -108,6 +136,8 @@ async def get_fy_context(db: AsyncSession, org_id: str) -> dict:
     start_date = fy["start_date"]
     end_date = fy["end_date"]
 
+    last_closed = await get_last_closed_period_end_date(db, org_id)
+
     return {
         "fy_label": fy["fy_label"],
         "fy_year": fy["fy_year"],
@@ -117,6 +147,7 @@ async def get_fy_context(db: AsyncSession, org_id: str) -> dict:
         "months_total": months_total,
         "prior_fy_label": prior_fy_label,
         "is_near_year_end": months_elapsed >= 10,
+        "last_closed_period_end": last_closed.isoformat() if last_closed else None,
     }
 
 
