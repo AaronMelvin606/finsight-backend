@@ -18,6 +18,10 @@ users, organisations, xero_connections, account_mappings, budget_monthly, fiscal
 - Org ID: 2a291c1b-926e-4e2f-9dfa-5fc717960b4c
 - Sandbox login: aaron@finsightai.tech / FinSight2026!
 
+## API login (curl / scripts)
+- Use **`POST /api/v1/auth/login/json`** with JSON `{"email","password"}` for programmatic login and JWT retrieval.
+- **`POST /api/v1/auth/login`** is OAuth2 form (`username` / `password`), not JSON — do not use it for JSON bodies.
+
 ## Non-negotiable rules
 - All KPI calculations live in the backend. Never move calculations to the frontend.
 - Budget ingestion: Path A (Xero GET /budgets) is always preferred. Path B (CSV upload) is the fallback.
