@@ -137,6 +137,20 @@ async def create_organisation(
     )
 
 
+@router.get("/me", response_model=OrganisationDetailResponse)
+async def get_my_organisation(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return details for the current user's selected organisation."""
+    if not current_user.organisation_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Organisation not found",
+        )
+    return await get_organisation(str(current_user.organisation_id), current_user, db)
+
+
 @router.get("/{org_id}", response_model=OrganisationDetailResponse)
 async def get_organisation(
     org_id: str,
