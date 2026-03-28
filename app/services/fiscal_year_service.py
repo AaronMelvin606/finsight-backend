@@ -138,6 +138,19 @@ async def get_fy_context(db: AsyncSession, org_id: str) -> dict:
 
     last_closed = await get_last_closed_period_end_date(db, org_id)
 
+    # First completed-but-not-closed month = next period available to close
+    ncp_result = await db.execute(
+        text(
+            "SELECT month_period FROM fiscal_year_months "
+            "WHERE organisation_id = :org_id "
+            "  AND is_completed = true AND is_closed = false "
+            "ORDER BY month_period ASC LIMIT 1"
+        ),
+        {"org_id": org_id},
+    )
+    ncp_row = ncp_result.mappings().first()
+    next_closeable = ncp_row["month_period"] if ncp_row else None
+
     return {
         "fy_label": fy["fy_label"],
         "fy_year": fy["fy_year"],
@@ -148,6 +161,7 @@ async def get_fy_context(db: AsyncSession, org_id: str) -> dict:
         "prior_fy_label": prior_fy_label,
         "is_near_year_end": months_elapsed >= 10,
         "last_closed_period_end": last_closed.isoformat() if last_closed else None,
+        "next_closeable_period": next_closeable.isoformat() if hasattr(next_closeable, "isoformat") else next_closeable,
     }
 
 
