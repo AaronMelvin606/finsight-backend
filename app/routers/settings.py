@@ -3,7 +3,7 @@ FinSight AI - Settings router (period close / reopen)
 ======================================================
 """
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -13,8 +13,12 @@ from sqlalchemy import text
 from app.core.database import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
+from app.services.fiscal_year_service import _MONTH_END_EXPR
 
 router = APIRouter()
+
+# Same month-end logic as fiscal reports — never use month_period::date (breaks YYYY-MM varchar).
+_MONTH_END_SQL = _MONTH_END_EXPR.strip()
 
 
 @router.get("/settings")
@@ -39,13 +43,6 @@ class PeriodEndBody(BaseModel):
     period_end: date
 
 
-def _month_end_expr() -> str:
-    """SQL expression: calendar month-end date from fiscal_year_months.month_period."""
-    return (
-        "(date_trunc('month', month_period::date) + interval '1 month - 1 day')::date"
-    )
-
-
 @router.post("/settings/close-period")
 async def close_period(
     body: PeriodEndBody,
@@ -56,14 +53,14 @@ async def close_period(
     if not org_id or org_id == "None":
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 
-    me = _month_end_expr()
+    me = _MONTH_END_SQL
     result = await db.execute(
         text(
             f"""
-            SELECT id, is_closed, closed_at, closed_by, {me} AS month_end
+            SELECT id, is_closed, closed_at, closed_by, ({me}) AS month_end
             FROM fiscal_year_months
             WHERE organisation_id = :org_id
-              AND {me} = :period_end
+              AND ({me}) = :period_end
             LIMIT 1
             """
         ),
@@ -78,7 +75,7 @@ async def close_period(
     if row.get("is_closed"):
         raise HTTPException(status_code=400, detail="Period is already closed")
 
-    closed_at = datetime.now(timezone.utc)
+    closed_at = datetime.utcnow()
     closed_by = current_user.email or ""
 
     await db.execute(
@@ -117,14 +114,14 @@ async def reopen_period(
     if not org_id or org_id == "None":
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 
-    me = _month_end_expr()
+    me = _MONTH_END_SQL
     result = await db.execute(
         text(
             f"""
-            SELECT id, is_closed, {me} AS month_end
+            SELECT id, is_closed, ({me}) AS month_end
             FROM fiscal_year_months
             WHERE organisation_id = :org_id
-              AND {me} = :period_end
+              AND ({me}) = :period_end
             LIMIT 1
             """
         ),
