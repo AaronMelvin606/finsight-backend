@@ -143,12 +143,27 @@ async def get_my_organisation(
     db: AsyncSession = Depends(get_db),
 ):
     """Return details for the current user's selected organisation."""
-    if not current_user.organisation_id:
+    fresh = await db.execute(
+        select(User.organisation_id).where(User.id == current_user.id)
+    )
+    org_id = fresh.scalar_one_or_none()
+    if org_id is None:
+        org_id = current_user.organisation_id
+    if not org_id:
+        mem = await db.execute(
+            select(OrganisationMember.organisation_id)
+            .where(OrganisationMember.user_id == current_user.id)
+            .limit(1)
+        )
+        row = mem.scalar_one_or_none()
+        if row is not None:
+            org_id = row
+    if not org_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Organisation not found",
         )
-    return await get_organisation(str(current_user.organisation_id), current_user, db)
+    return await get_organisation(str(org_id), current_user, db)
 
 
 @router.get("/{org_id}", response_model=OrganisationDetailResponse)
