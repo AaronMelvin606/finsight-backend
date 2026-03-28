@@ -55,3 +55,98 @@ Revenue £36,284 − COGS £1,950 = GP £34,334; GP − OpEx £17,622 = EBITDA �
 - 346159e: unmapped account dropdown
 - faa76c6 + d1e9bed: login/register toggle
 - 4a676ea: privacy/cookie policy
+
+## Environments (added 28 Mar 2026)
+
+### Two environments — both live
+
+| Environment | Backend | Frontend | Neon |
+|-------------|---------|----------|------|
+| Production | api.finsightai.tech | finsightai-dashboard.netlify.app | production project (sweet-pine-82812474) |
+| Staging | api-staging.finsightai.tech | finsightai-dashboard-staging.netlify.app | separate staging project |
+
+- Staging Netlify site ID: 3ceb45c6-3185-4d36-b494-a4005f41b1de
+- Production Netlify site ID: 6fdc9225-d3d2-417f-a11d-3c604f2816eb
+- Staging Cloud Run service: finsight-backend-staging (us-central1)
+- Production Cloud Run service: finsight-backend (us-central1)
+- GCP project: gen-lang-client-0798522650
+
+### DNS known issue
+Home WiFi/ISP blocks .run.app domains — use mobile hotspot for all curl
+verification against api.finsightai.tech and api-staging.finsightai.tech.
+Direct Cloud Run URL always works regardless of network:
+finsight-backend-staging-520129376224.us-central1.run.app
+
+### Deployment flow
+Normal:  feature branch → staging → verify → merge to main → production
+Hotfix:  hotfix branch → main → verify in production → merge back to staging
+
+### Keeping environments in sync after hotfixes
+Run in finsight-backend:
+  git checkout staging && git merge main && git push origin staging && git checkout main
+Run in FinSight-AI---Professional-Growth-Suite:
+  git checkout staging && git merge main && git push origin staging && git checkout main
+
+---
+
+## fiscal_year_months table (added 28 Mar 2026)
+
+- month_period is VARCHAR stored as YYYY-MM in production
+- NEVER use month_period::date — breaks on YYYY-MM format
+- ALWAYS use _MONTH_END_EXPR / _MONTH_END_SQL from fiscal_year_service.py
+  which handles both YYYY-MM and YYYY-MM-DD via explicit CASE branches
+- Columns: organisation_id, fy_year, month_period, is_completed,
+  is_closed, closed_at, closed_by (text)
+- NO start_date / end_date / fiscal_year_id columns on this table
+
+## organisation_members table (added 28 Mar 2026)
+
+- Columns: id (uuid), organisation_id, user_id, role, invited_by_id,
+  invitation_token, invitation_accepted_at, joined_at
+- NO created_at column — use joined_at
+- Sandbox row inserted 28 Mar 2026:
+  user_id=d019c93f-2094-40c1-a29c-f157bfb91b5a
+  org_id=2a291c1b-926e-4e2f-9dfa-5fc717960b4c
+  role=owner
+
+## GET /organisations/me (added 28 Mar 2026)
+
+- Route MUST be registered before GET /{org_id} to prevent "me" being
+  treated as a UUID and crashing the DB query
+- Resolves org in order: (1) fresh DB lookup on users.organisation_id,
+  (2) in-memory current_user.organisation_id, (3) organisation_members row
+- get_organisation allows access if no membership row exists but
+  users.organisation_id matches — handles legacy/inconsistent data
+
+## datetime rules (non-negotiable)
+
+- Always datetime.utcnow() — never datetime.now(timezone.utc)
+- Neon stores naive timestamps — timezone-aware datetimes cause
+  silent comparison failures in production
+- closed_at on fiscal_year_months uses datetime.utcnow()
+
+## close-period endpoint (added 28 Mar 2026)
+
+- Request body: {"period_end": "YYYY-MM-DD"}
+- Matches fiscal_year_months rows using _MONTH_END_SQL — never month_period::date
+- A period is closeable if is_completed = true and end_date is in the past
+- February 2026 closed manually 28 Mar 2026 by aaron@finsightai.tech
+- March 2026 becomes closeable after 31 March 2026
+
+## WS4.5 backlog — auto-close overdue periods
+
+- Auto-close any is_completed=true, is_closed=false months where end date
+  is more than 5 days in the past, on every fy-context load
+- Currently auto-close backlog only runs when last_closed is None
+- Required so new users connect and see all past periods already closed
+  without needing manual intervention
+
+## Session commit trail — 28 Mar 2026
+
+563adbd — fix: YYYY-MM date format crash in fy-context
+2217239 — fix: strict month_period parsing, no blind to_date
+b57eaf5 — fix: GET /organisations/me 500 — add /me route before /{org_id}
+8624c95 — fix: GET /settings 405 — add GET handler
+cb7bc8c — fix: allow org access via users.organisation_id fallback
+06ca117 — fix: GET /organisations/me 404 — multi-path org resolution
+e2133fc — fix: POST /close-period 500 — YYYY-MM breaks ::date cast
