@@ -8,7 +8,7 @@ and auto-generation of fiscal_years / fiscal_year_months rows.
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from datetime import date, datetime
-from typing import Optional
+from typing import Optional, Union
 import logging
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,18 @@ async def get_last_closed_period_end_date(db: AsyncSession, org_id: str) -> Opti
         return v
     if hasattr(v, "date"):
         return v.date()
+    return None
+
+
+def _coerce_to_date(val: Union[date, datetime, object, None]) -> Optional[date]:
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val.date()
+    if isinstance(val, date):
+        return val
+    if hasattr(val, "date"):
+        return val.date()  # type: ignore[union-attr]
     return None
 
 
@@ -137,19 +149,79 @@ async def get_fy_context(db: AsyncSession, org_id: str) -> dict:
     end_date = fy["end_date"]
 
     last_closed = await get_last_closed_period_end_date(db, org_id)
+    next_closeable: Optional[date] = None
 
-    # First completed-but-not-closed month = next period available to close
-    ncp_result = await db.execute(
-        text(
-            "SELECT month_period FROM fiscal_year_months "
-            "WHERE organisation_id = :org_id "
-            "  AND is_completed = true AND is_closed = false "
-            "ORDER BY month_period ASC LIMIT 1"
-        ),
-        {"org_id": org_id},
-    )
-    ncp_row = ncp_result.mappings().first()
-    next_closeable = ncp_row["month_period"] if ncp_row else None
+    if last_closed is None:
+        # Never closed before: auto-close every completed month except the latest,
+        # so the user only needs to close the current trailing month (not the whole FY).
+        upd = await db.execute(
+            text(
+                """
+                UPDATE fiscal_year_months AS f
+                SET is_closed = true,
+                    closed_at = NOW(),
+                    closed_by = 'system'
+                FROM (
+                    SELECT month_period
+                    FROM fiscal_year_months
+                    WHERE organisation_id = :org_id AND is_completed = true
+                    ORDER BY month_period DESC
+                    LIMIT 1
+                ) AS latest
+                WHERE f.organisation_id = :org_id
+                  AND f.is_completed = true
+                  AND f.is_closed = false
+                  AND f.month_period::date < latest.month_period::date
+                """
+            ),
+            {"org_id": org_id},
+        )
+        if upd.rowcount and upd.rowcount > 0:
+            await db.commit()
+            logger.info(
+                f"[FISCAL] Auto-closed {upd.rowcount} earlier completed month(s) for org={org_id}"
+            )
+        last_closed = await get_last_closed_period_end_date(db, org_id)
+
+        ncp_after = await db.execute(
+            text(
+                """
+                SELECT (
+                    date_trunc('month', month_period::date) + interval '1 month - 1 day'
+                )::date AS month_end
+                FROM fiscal_year_months
+                WHERE organisation_id = :org_id
+                  AND is_completed = true
+                  AND is_closed = false
+                ORDER BY month_period DESC
+                LIMIT 1
+                """
+            ),
+            {"org_id": org_id},
+        )
+        ncp_row = ncp_after.mappings().first()
+        next_closeable = _coerce_to_date(ncp_row["month_end"]) if ncp_row else None
+    else:
+        # Sequential: first completed-but-not-closed month strictly after last closed period end.
+        ncp_result = await db.execute(
+            text(
+                """
+                SELECT (
+                    date_trunc('month', month_period::date) + interval '1 month - 1 day'
+                )::date AS month_end
+                FROM fiscal_year_months
+                WHERE organisation_id = :org_id
+                  AND is_completed = true
+                  AND is_closed = false
+                  AND (date_trunc('month', month_period::date) + interval '1 month - 1 day')::date > :last_closed
+                ORDER BY month_period ASC
+                LIMIT 1
+                """
+            ),
+            {"org_id": org_id, "last_closed": last_closed},
+        )
+        ncp_row = ncp_result.mappings().first()
+        next_closeable = _coerce_to_date(ncp_row["month_end"]) if ncp_row else None
 
     return {
         "fy_label": fy["fy_label"],
@@ -161,7 +233,7 @@ async def get_fy_context(db: AsyncSession, org_id: str) -> dict:
         "prior_fy_label": prior_fy_label,
         "is_near_year_end": months_elapsed >= 10,
         "last_closed_period_end": last_closed.isoformat() if last_closed else None,
-        "next_closeable_period": next_closeable.isoformat() if hasattr(next_closeable, "isoformat") else next_closeable,
+        "next_closeable_period": next_closeable.isoformat() if next_closeable else None,
     }
 
 
