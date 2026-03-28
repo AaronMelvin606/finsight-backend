@@ -14,16 +14,20 @@ import logging
 logger = logging.getLogger(__name__)
 
 # month_period is VARCHAR: production uses "YYYY-MM", some envs use "YYYY-MM-DD".
-# Never use month_period::date — it breaks on "YYYY-MM". Compute calendar month-end via to_date.
-_MONTH_END_FROM_PERIOD_SQL = """(
-    (date_trunc('month', to_date(
-        CASE
-            WHEN trim(month_period) ~ '^[0-9]{4}-[0-9]{2}$' THEN trim(month_period) || '-01'
-            ELSE trim(month_period)
-        END,
-        'YYYY-MM-DD'
-    )) + interval '1 month - 1 day'
-)::date"""
+# Never use month_period::date — it breaks on "YYYY-MM".
+# Never pass arbitrary strings to to_date (ELSE branch): malformed legacy rows caused production 500s.
+_MONTH_END_EXPR = """
+CASE
+  WHEN month_period IS NULL OR trim(month_period) = '' THEN NULL
+  WHEN trim(month_period) ~ '^[0-9]{4}-[0-9]{2}$' THEN
+    (date_trunc('month', to_date(trim(month_period) || '-01', 'YYYY-MM-DD'))
+     + interval '1 month - 1 day')::date
+  WHEN trim(month_period) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+    (date_trunc('month', to_date(trim(month_period), 'YYYY-MM-DD'))
+     + interval '1 month - 1 day')::date
+  ELSE NULL
+END
+"""
 
 # Compare periods in calendar order using a normalised YYYY-MM prefix (7 chars).
 _MONTH_KEY_SQL = "substring(trim(month_period) from 1 for 7)"
@@ -63,9 +67,13 @@ async def get_last_closed_period_end_date(db: AsyncSession, org_id: str) -> Opti
     result = await db.execute(
         text(
             f"""
-            SELECT {_MONTH_END_FROM_PERIOD_SQL} AS month_end
-            FROM fiscal_year_months
-            WHERE organisation_id = :org_id AND is_closed = TRUE
+            SELECT month_end
+            FROM (
+                SELECT {_MONTH_END_EXPR} AS month_end
+                FROM fiscal_year_months
+                WHERE organisation_id = :org_id AND is_closed = TRUE
+            ) AS parsed
+            WHERE month_end IS NOT NULL
             ORDER BY month_end DESC
             LIMIT 1
             """
@@ -200,12 +208,16 @@ async def get_fy_context(db: AsyncSession, org_id: str) -> dict:
         ncp_after = await db.execute(
             text(
                 f"""
-                SELECT {_MONTH_END_FROM_PERIOD_SQL} AS month_end
-                FROM fiscal_year_months
-                WHERE organisation_id = :org_id
-                  AND is_completed = true
-                  AND is_closed = false
-                ORDER BY month_period DESC
+                SELECT month_end
+                FROM (
+                    SELECT {_MONTH_END_EXPR} AS month_end
+                    FROM fiscal_year_months
+                    WHERE organisation_id = :org_id
+                      AND is_completed = true
+                      AND is_closed = false
+                ) AS parsed
+                WHERE month_end IS NOT NULL
+                ORDER BY month_end DESC
                 LIMIT 1
                 """
             ),
@@ -219,13 +231,17 @@ async def get_fy_context(db: AsyncSession, org_id: str) -> dict:
         ncp_result = await db.execute(
             text(
                 f"""
-                SELECT {_MONTH_END_FROM_PERIOD_SQL} AS month_end
-                FROM fiscal_year_months
-                WHERE organisation_id = :org_id
-                  AND is_completed = true
-                  AND is_closed = false
-                  AND {_MONTH_KEY_SQL} > :last_closed_ym
-                ORDER BY month_period ASC
+                SELECT month_end
+                FROM (
+                    SELECT {_MONTH_END_EXPR} AS month_end
+                    FROM fiscal_year_months
+                    WHERE organisation_id = :org_id
+                      AND is_completed = true
+                      AND is_closed = false
+                      AND {_MONTH_KEY_SQL} > :last_closed_ym
+                ) AS parsed
+                WHERE month_end IS NOT NULL
+                ORDER BY month_end ASC
                 LIMIT 1
                 """
             ),
