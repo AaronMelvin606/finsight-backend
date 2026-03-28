@@ -169,13 +169,15 @@ async def get_organisation(
         .where(OrganisationMember.user_id == current_user.id)
     )
     membership = membership_result.scalar_one_or_none()
-    
+
     if not membership:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Organisation not found"
-        )
-    
+        if current_user.organisation_id is None or str(current_user.organisation_id) != org_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Organisation not found"
+            )
+        # Linked via users.organisation_id but no organisation_members row (legacy / inconsistent data).
+
     # Get organisation
     org_result = await db.execute(
         select(Organisation).where(Organisation.id == org_id)
