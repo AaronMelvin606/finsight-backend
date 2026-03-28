@@ -13,6 +13,21 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# month_period is VARCHAR: production uses "YYYY-MM", some envs use "YYYY-MM-DD".
+# Never use month_period::date — it breaks on "YYYY-MM". Compute calendar month-end via to_date.
+_MONTH_END_FROM_PERIOD_SQL = """(
+    (date_trunc('month', to_date(
+        CASE
+            WHEN trim(month_period) ~ '^[0-9]{4}-[0-9]{2}$' THEN trim(month_period) || '-01'
+            ELSE trim(month_period)
+        END,
+        'YYYY-MM-DD'
+    )) + interval '1 month - 1 day'
+)::date"""
+
+# Compare periods in calendar order using a normalised YYYY-MM prefix (7 chars).
+_MONTH_KEY_SQL = "substring(trim(month_period) from 1 for 7)"
+
 
 async def ensure_fiscal_months_current(db: AsyncSession, org_id: str) -> int:
     """Mark fiscal_year_months rows as completed when their month has ended.
@@ -47,10 +62,8 @@ async def get_last_closed_period_end_date(db: AsyncSession, org_id: str) -> Opti
     """Latest calendar month-end among fiscal_year_months rows marked closed for this org."""
     result = await db.execute(
         text(
-            """
-            SELECT (
-                date_trunc('month', month_period::date) + interval '1 month - 1 day'
-            )::date AS month_end
+            f"""
+            SELECT {_MONTH_END_FROM_PERIOD_SQL} AS month_end
             FROM fiscal_year_months
             WHERE organisation_id = :org_id AND is_closed = TRUE
             ORDER BY month_end DESC
@@ -171,7 +184,8 @@ async def get_fy_context(db: AsyncSession, org_id: str) -> dict:
                 WHERE f.organisation_id = :org_id
                   AND f.is_completed = true
                   AND f.is_closed = false
-                  AND f.month_period::date < latest.month_period::date
+                  AND substring(trim(f.month_period) from 1 for 7)
+                        < substring(trim(latest.month_period) from 1 for 7)
                 """
             ),
             {"org_id": org_id},
@@ -185,10 +199,8 @@ async def get_fy_context(db: AsyncSession, org_id: str) -> dict:
 
         ncp_after = await db.execute(
             text(
-                """
-                SELECT (
-                    date_trunc('month', month_period::date) + interval '1 month - 1 day'
-                )::date AS month_end
+                f"""
+                SELECT {_MONTH_END_FROM_PERIOD_SQL} AS month_end
                 FROM fiscal_year_months
                 WHERE organisation_id = :org_id
                   AND is_completed = true
@@ -203,22 +215,21 @@ async def get_fy_context(db: AsyncSession, org_id: str) -> dict:
         next_closeable = _coerce_to_date(ncp_row["month_end"]) if ncp_row else None
     else:
         # Sequential: first completed-but-not-closed month strictly after last closed period end.
+        last_closed_ym = last_closed.strftime("%Y-%m")
         ncp_result = await db.execute(
             text(
-                """
-                SELECT (
-                    date_trunc('month', month_period::date) + interval '1 month - 1 day'
-                )::date AS month_end
+                f"""
+                SELECT {_MONTH_END_FROM_PERIOD_SQL} AS month_end
                 FROM fiscal_year_months
                 WHERE organisation_id = :org_id
                   AND is_completed = true
                   AND is_closed = false
-                  AND (date_trunc('month', month_period::date) + interval '1 month - 1 day')::date > :last_closed
+                  AND {_MONTH_KEY_SQL} > :last_closed_ym
                 ORDER BY month_period ASC
                 LIMIT 1
                 """
             ),
-            {"org_id": org_id, "last_closed": last_closed},
+            {"org_id": org_id, "last_closed_ym": last_closed_ym},
         )
         ncp_row = ncp_result.mappings().first()
         next_closeable = _coerce_to_date(ncp_row["month_end"]) if ncp_row else None
