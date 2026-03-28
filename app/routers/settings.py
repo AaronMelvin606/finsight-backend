@@ -17,6 +17,24 @@ from app.models.user import User
 router = APIRouter()
 
 
+@router.get("/settings")
+async def get_settings(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return report settings for the current organisation (alias for GET /reports/settings)."""
+    org_id = str(current_user.organisation_id)
+    if not org_id or org_id == "None":
+        raise HTTPException(status_code=403, detail="Organisation not set for user")
+    result = await db.execute(
+        text("SELECT fy_start_month FROM organisations WHERE id = :org_id"),
+        {"org_id": org_id},
+    )
+    row = result.scalar()
+    fy_start_month = int(row) if row is not None else 4
+    return {"fy_start_month": fy_start_month}
+
+
 class PeriodEndBody(BaseModel):
     period_end: date
 
