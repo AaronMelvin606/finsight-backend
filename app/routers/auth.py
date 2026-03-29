@@ -503,9 +503,6 @@ async def register_simple(
             detail="email, password, full_name, and organisation_name are all required"
         )
 
-    # Allowlist check — same gate as the ORM register endpoint
-    await _check_registration_allowed(email, db)
-
     # Check for existing email with raw SQL
     check_result = await db.execute(
         text("SELECT id FROM users WHERE email = :email"),
