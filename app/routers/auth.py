@@ -98,9 +98,6 @@ async def register(
     try:
         logger.info(f"[REGISTER] Starting registration for email={user_data.email}")
 
-        # Allowlist check — blocks all unauthorised registration attempts
-        await _check_registration_allowed(user_data.email, db)
-
         # Check if email already exists
         existing_user = await get_user_by_email(db, user_data.email)
         if existing_user:
