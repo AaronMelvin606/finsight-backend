@@ -2,6 +2,8 @@ import resend
 import os
 import logging
 
+import sentry_sdk
+
 logger = logging.getLogger(__name__)
 
 FRONTEND_URL = os.getenv(
@@ -25,7 +27,7 @@ def send_password_reset_email(to_email: str, reset_token: str) -> bool:
     reset_link = f"{FRONTEND_URL}/?token={reset_token}"
 
     try:
-        resend.Emails.send({
+        result = resend.Emails.send({
             "from": FROM_EMAIL,
             "to": [to_email],
             "subject": "Reset your FinSight AI password",
@@ -91,11 +93,23 @@ If you did not request this, you can safely ignore this email.
 FinSight AI · finsightai.tech
 """
         })
-        logger.info(f"[EMAIL] Password reset email sent to {to_email}")
+        email_id = result.get("id") if isinstance(result, dict) else None
+        if not email_id:
+            logger.error(
+                f"[EMAIL] Resend returned no email id for {to_email}: {result!r}"
+            )
+            sentry_sdk.capture_message(
+                f"Password reset: Resend send returned unexpected response "
+                f"for {to_email}: {result!r}",
+                level="error",
+            )
+            return False
+        logger.info(f"[EMAIL] Password reset email sent to {to_email} id={email_id}")
         return True
 
     except Exception as e:
         logger.error(
             f"[EMAIL] Failed to send reset email to {to_email}: {e}"
         )
+        sentry_sdk.capture_exception(e)
         return False

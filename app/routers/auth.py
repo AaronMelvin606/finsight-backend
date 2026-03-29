@@ -428,6 +428,10 @@ async def request_password_reset(
                 f"[AUTH] Reset token generated but email failed "
                 f"for {data.email}"
             )
+            sentry_sdk.capture_message(
+                "Password reset email failed after token saved (user exists)",
+                level="error",
+            )
 
     return {
         "message": "If an account with that email exists, a password reset link has been sent."
@@ -453,6 +457,15 @@ async def confirm_password_reset(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token"
+        )
+
+    if (
+        user.password_reset_expires is None
+        or user.password_reset_expires < datetime.utcnow()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
         )
 
     user.hashed_password = get_password_hash(data.new_password)
