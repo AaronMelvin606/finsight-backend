@@ -342,4 +342,20 @@ async def generate_fy_rows(db: AsyncSession, org_id: str, fy_start_month: int = 
                 month = 1
                 year += 1
 
+    # Refresh is_completed for rows inserted earlier with ON CONFLICT DO NOTHING
+    # (stale false) — past calendar months must always be marked completed.
+    cutoff = datetime.utcnow().date().replace(day=1).strftime("%Y-%m")
+    await db.execute(
+        text(
+            """
+            UPDATE fiscal_year_months
+            SET is_completed = true
+            WHERE organisation_id = :org_id
+              AND substring(trim(month_period::text) from 1 for 7) < :cutoff
+              AND is_completed = false
+            """
+        ),
+        {"org_id": org_id, "cutoff": cutoff},
+    )
+
     await db.commit()

@@ -22,6 +22,7 @@ from app.core.database import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.services.fiscal_year_service import (
+    get_current_fy,
     get_fy_context,
     generate_fy_rows,
     ensure_fiscal_months_current,
@@ -190,6 +191,134 @@ async def budget_upload(
         "rows_rejected": rows_rejected,
         "total_budget_loaded": round(total_budget_loaded, 2),
         "fiscal_year": fiscal_year,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# COMPLETED PERIODS (fiscal_year_months.is_completed)
+# ──────────────────────────────────────────────────────────────────────
+
+@router.get("/reports/completed-periods")
+async def get_completed_periods(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    List months marked completed (auto or manual) for Period Close / Settings UI.
+    month_period is normalised as YYYY-MM via substring — never cast to ::date.
+    """
+    org_id = str(current_user.organisation_id)
+    if not org_id or org_id == "None":
+        raise HTTPException(status_code=403, detail="Organisation not set for user")
+
+    await ensure_fiscal_months_current(db, org_id)
+
+    fy_cur = await db.execute(
+        text(
+            "SELECT fy_year, fy_label FROM fiscal_years "
+            "WHERE organisation_id = :org_id AND is_current = true LIMIT 1"
+        ),
+        {"org_id": org_id},
+    )
+    fy_cur_row = fy_cur.mappings().first()
+    if fy_cur_row:
+        current_fy_year = int(fy_cur_row["fy_year"])
+        current_fy_label = str(fy_cur_row["fy_label"])
+    else:
+        fy_fallback = await get_current_fy(db, org_id)
+        current_fy_year = int(fy_fallback["fy_year"])
+        current_fy_label = str(fy_fallback["fy_label"])
+
+    mp_key = "substring(trim(month_period::text) from 1 for 7)"
+
+    list_result = await db.execute(
+        text(
+            f"""
+            SELECT fy_year, month_index, {mp_key} AS month_period
+            FROM fiscal_year_months
+            WHERE organisation_id = :org_id AND is_completed = true
+            ORDER BY {mp_key} ASC
+            """
+        ),
+        {"org_id": org_id},
+    )
+    rows = list_result.mappings().all()
+    completed_periods = []
+    for r in rows:
+        mp = (r["month_period"] or "").strip()
+        if len(mp) >= 7:
+            mp = mp[:7]
+        else:
+            continue
+        fy_year = r["fy_year"]
+        fy_label = f"FY{fy_year % 100:02d}"
+        completed_periods.append(
+            {
+                "month_period": mp,
+                "fy_label": fy_label,
+                "month_number": int(r["month_index"] or 0),
+            }
+        )
+
+    count_result = await db.execute(
+        text(
+            """
+            SELECT COUNT(*)::int AS n
+            FROM fiscal_year_months
+            WHERE organisation_id = :org_id
+              AND fy_year = :fy_year
+              AND is_completed = true
+            """
+        ),
+        {"org_id": org_id, "fy_year": current_fy_year},
+    )
+    cr = count_result.mappings().first()
+    total_completed_current_fy = int(cr["n"]) if cr and cr.get("n") is not None else 0
+
+    latest_result = await db.execute(
+        text(
+            f"""
+            SELECT {mp_key} AS mp
+            FROM fiscal_year_months
+            WHERE organisation_id = :org_id
+              AND fy_year = :fy_year
+              AND is_completed = true
+            ORDER BY {mp_key} DESC
+            LIMIT 1
+            """
+        ),
+        {"org_id": org_id, "fy_year": current_fy_year},
+    )
+    lr = latest_result.mappings().first()
+    latest_completed = None
+    if lr and lr["mp"]:
+        s = (lr["mp"] or "").strip()
+        latest_completed = s[:7] if len(s) >= 7 else None
+
+    next_result = await db.execute(
+        text(
+            f"""
+            SELECT {mp_key} AS mp
+            FROM fiscal_year_months
+            WHERE organisation_id = :org_id AND is_completed = false
+            ORDER BY {mp_key} ASC
+            LIMIT 1
+            """
+        ),
+        {"org_id": org_id},
+    )
+    nr = next_result.mappings().first()
+    next_to_complete = None
+    if nr and nr["mp"]:
+        s = (nr["mp"] or "").strip()
+        next_to_complete = s[:7] if len(s) >= 7 else None
+
+    return {
+        "completed_periods": completed_periods,
+        "latest_completed": latest_completed,
+        "total_completed": total_completed_current_fy,
+        "current_fy_label": current_fy_label,
+        "next_to_complete": next_to_complete,
     }
 
 
