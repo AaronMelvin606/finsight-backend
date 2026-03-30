@@ -234,7 +234,7 @@ async def get_completed_periods(
     list_result = await db.execute(
         text(
             f"""
-            SELECT fy_year, month_index, {mp_key} AS month_period
+            SELECT fy_year, month_number, {mp_key} AS month_period
             FROM fiscal_year_months
             WHERE organisation_id = :org_id AND is_completed = true
             ORDER BY {mp_key} ASC
@@ -256,7 +256,7 @@ async def get_completed_periods(
             {
                 "month_period": mp,
                 "fy_label": fy_label,
-                "month_number": int(r["month_index"] or 0),
+                "month_number": int(r["month_number"] or 0),
             }
         )
 
