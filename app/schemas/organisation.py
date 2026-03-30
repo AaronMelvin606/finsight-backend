@@ -65,6 +65,10 @@ class OrganisationUpdate(BaseModel):
     website: Optional[str] = Field(None, max_length=255)
     billing_email: Optional[EmailStr] = None
     billing_address: Optional[str] = None
+    org_context: Optional[str] = Field(
+        None,
+        description="Business context for AI commentary (plain text)",
+    )
 
 
 class OrganisationResponse(BaseModel):
@@ -72,6 +76,7 @@ class OrganisationResponse(BaseModel):
     id: str
     name: str
     slug: str
+    org_context: Optional[str] = None
     industry: Optional[str] = None
     size: Optional[str] = None
     website: Optional[str] = None

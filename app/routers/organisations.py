@@ -63,6 +63,7 @@ async def list_my_organisations(
             id=str(org.id),
             name=org.name,
             slug=org.slug,
+            org_context=org.org_context,
             industry=org.industry,
             size=org.size,
             website=org.website,
@@ -127,6 +128,7 @@ async def create_organisation(
         id=str(new_org.id),
         name=new_org.name,
         slug=new_org.slug,
+        org_context=new_org.org_context,
         industry=new_org.industry,
         size=new_org.size,
         website=new_org.website,
@@ -223,6 +225,7 @@ async def get_organisation(
         id=str(org.id),
         name=org.name,
         slug=org.slug,
+        org_context=org.org_context,
         industry=org.industry,
         size=org.size,
         website=org.website,
@@ -287,6 +290,12 @@ async def update_organisation(
         org.billing_email = updates.billing_email
     if updates.billing_address is not None:
         org.billing_address = updates.billing_address
+    if "org_context" in updates.model_dump(exclude_unset=True):
+        raw = updates.org_context
+        if raw is None:
+            org.org_context = None
+        else:
+            org.org_context = raw.strip() or None
     
     await db.commit()
     await db.refresh(org)
@@ -295,6 +304,7 @@ async def update_organisation(
         id=str(org.id),
         name=org.name,
         slug=org.slug,
+        org_context=org.org_context,
         industry=org.industry,
         size=org.size,
         website=org.website,

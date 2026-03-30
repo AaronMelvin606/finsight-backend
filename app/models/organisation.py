@@ -64,6 +64,9 @@ class Organisation(Base):
     industry = Column(String(100), nullable=True)
     size = Column(String(50), nullable=True)  # e.g., "1-10", "11-50", "51-200"
     website = Column(String(255), nullable=True)
+
+    # Free-text business context for AI commentary (e.g. SaaS vs practice, strategic focus)
+    org_context = Column(Text, nullable=True)
     
     # Billing contact
     billing_email = Column(String(255), nullable=True)
