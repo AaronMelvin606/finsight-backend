@@ -5,7 +5,8 @@ FastAPI backend for FinSight AI — a modular SaaS CFO platform. Deployed on Goo
 
 ## Infrastructure
 - Runtime: FastAPI on Google Cloud Run (us-central1)
-- Latest revision: finsight-backend-00119-v4z
+- Production revision: finsight-backend-00140-gfd (deployed 30 Mar 2026)
+- Staging revision: finsight-backend-staging-00006-chg (deployed 30 Mar 2026)
 - Database: Neon PostgreSQL (9 tables)
 - Custom domain: api.finsightai.tech → finsight-backend-520129376224.us-central1.run.app
 - Monitoring: Sentry (backend DSN), GCP Monitoring alerts
@@ -55,6 +56,9 @@ Revenue £36,284 − COGS £1,950 = GP £34,334; GP − OpEx £17,622 = EBITDA �
 - 346159e: unmapped account dropdown
 - faa76c6 + d1e9bed: login/register toggle
 - 4a676ea: privacy/cookie policy
+- 4ac35f0: completed-periods endpoint, close-period via fiscal_year_months, generate_fy_rows refresh
+- 686ecc5: completed-periods — read month_number (not month_index)
+- 5ab70b5: initial Xero sync 24 months (prior-year comparison)
 
 ## Environments (added 28 Mar 2026)
 
@@ -69,7 +73,7 @@ Revenue £36,284 − COGS £1,950 = GP £34,334; GP − OpEx £17,622 = EBITDA �
 - Production Netlify site ID: 6fdc9225-d3d2-417f-a11d-3c604f2816eb
 - Staging Cloud Run service: finsight-backend-staging (us-central1)
 - Production Cloud Run service: finsight-backend (us-central1)
-- GCP project: gen-lang-client-0798522650
+- GCP project ID: **gen-lang-client-0798522650** — not `finsight-ai`. All `gcloud` commands must use `--project gen-lang-client-0798522650`.
 
 ### DNS known issue
 Home WiFi/ISP blocks .run.app domains — use mobile hotspot for all curl
@@ -98,6 +102,18 @@ Run in FinSight-AI---Professional-Growth-Suite:
 - Columns: organisation_id, fy_year, month_period, is_completed,
   is_closed, closed_at, closed_by (text)
 - NO start_date / end_date / fiscal_year_id columns on this table
+
+## Period close architecture (30 Mar 2026)
+
+- Period close is **two-tier**: **`is_completed`** (automatic — all past months marked complete on Xero connect and on every **`GET /reports/completed-periods`** call) and **`is_closed`** (manual sign-off, optional user action). **`is_completed`** drives module rendering. **`is_closed`** is additive.
+- **`ensure_fiscal_months_current()`** only sets **`is_completed = true`**, never false. Called at the top of **`GET /reports/completed-periods`**.
+- **`generate_fy_rows()`** runs an **UPDATE** after **INSERT** that refreshes stale **`is_completed = false`** rows for past months.
+- Initial Xero sync pulls **24 months** of history (not 12) so Revenue Summary can compare to the prior year.
+
+## GET /reports/completed-periods (30 Mar 2026)
+
+- **`total_completed`** and **`latest_completed`** are scoped to the **current FY only**.
+- The **`completed_periods`** array lists completed months across **all FYs** (full history).
 
 ## organisation_members table (added 28 Mar 2026)
 
@@ -128,8 +144,9 @@ Run in FinSight-AI---Professional-Growth-Suite:
 ## close-period endpoint (added 28 Mar 2026)
 
 - Request body: {"period_end": "YYYY-MM-DD"}
-- Matches fiscal_year_months rows using _MONTH_END_SQL — never month_period::date
-- A period is closeable if is_completed = true and end_date is in the past
+- Matches **`fiscal_year_months`** rows using **`_MONTH_END_SQL`** — never **`month_period::date`**
+- Manual close updates **`is_closed`** (sign-off). **`is_completed`** remains the automatic completion flag; see **Period close architecture** above.
+- A period is closeable if **`is_completed = true`** and the month end date is in the past
 - February 2026 closed manually 28 Mar 2026 by aaron@finsightai.tech
 - March 2026 becomes closeable after 31 March 2026
 
@@ -150,3 +167,14 @@ b57eaf5 — fix: GET /organisations/me 500 — add /me route before /{org_id}
 cb7bc8c — fix: allow org access via users.organisation_id fallback
 06ca117 — fix: GET /organisations/me 404 — multi-path org resolution
 e2133fc — fix: POST /close-period 500 — YYYY-MM breaks ::date cast
+
+## Session commit trail — 30 Mar 2026
+
+4ac35f0 — feat: add completed-periods endpoint, update close-period to use fiscal_year_months, fix generate_fy_rows refresh
+686ecc5 — fix: read month_number instead of month_index in completed-periods endpoint
+5ab70b5 — feat: extend initial Xero sync from 12 to 24 months for prior year comparison
+
+## Known issues (30 Mar 2026)
+
+- **Duplicate org names in production:** two organisations both named "FinSight AI": **`2a291c1b-926e-4e2f-9dfa-5fc717960b4c`** (sandbox, **aaron@finsightai.tech**) and **`109ff319`** (**aaronmelvin123@gmail.com**). **`fiscal_year_months`** is only populated for the sandbox org. Multi-org cleanup needed.
+- **`next_to_complete`:** **`null`** on staging (no incomplete months in staging data) vs **`"2026-03"`** on production — data difference, not a bug.
