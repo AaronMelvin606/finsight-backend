@@ -425,7 +425,13 @@ def _calendar_last_completed_month_end() -> date:
 
 
 async def _resolve_default_period_end(db: AsyncSession, org_id: str) -> date:
-    """Default report period end: latest closed fiscal month, else last completed calendar month."""
+    """Return fallback report period end when the client does not pass period params.
+
+    Default behaviour is latest closed fiscal month, else the last completed
+    calendar month. Frontend flows should pass explicit period_start and
+    period_end whenever a user has selected a specific FY or wants to include
+    in-progress month data; this backend default is only for omitted params.
+    """
     last_closed = await get_last_closed_period_end_date(db, org_id)
     if last_closed is not None:
         return last_closed
