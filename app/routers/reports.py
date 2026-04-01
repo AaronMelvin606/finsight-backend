@@ -425,7 +425,13 @@ def _calendar_last_completed_month_end() -> date:
 
 
 async def _resolve_default_period_end(db: AsyncSession, org_id: str) -> date:
-    """Default report period end: latest closed fiscal month, else last completed calendar month."""
+    """Return fallback report period end when the client does not pass period params.
+
+    Default behaviour is latest closed fiscal month, else the last completed
+    calendar month. Frontend flows should pass explicit period_start and
+    period_end whenever a user has selected a specific FY or wants to include
+    in-progress month data; this backend default is only for omitted params.
+    """
     last_closed = await get_last_closed_period_end_date(db, org_id)
     if last_closed is not None:
         return last_closed
@@ -1296,6 +1302,88 @@ async def get_fy_context_endpoint(
     org_id = str(current_user.organisation_id)
     await ensure_fiscal_months_current(db, org_id)
     return await get_fy_context(db, org_id)
+
+
+@router.get("/reports/available-fys")
+async def get_available_fys(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return fiscal years for selector UI, including whether each FY has data."""
+    org_id = str(current_user.organisation_id)
+    if not org_id or org_id == "None":
+        raise HTTPException(status_code=403, detail="Organisation not set for user")
+
+    fy_start_month = await _get_fy_start_month(db, org_id)
+    fy_result = await db.execute(
+        text(
+            """
+            SELECT fy_year, fy_label, is_current
+            FROM fiscal_years
+            WHERE organisation_id = :org_id
+            ORDER BY fy_year DESC
+            """
+        ),
+        {"org_id": org_id},
+    )
+    fy_rows = fy_result.mappings().all()
+
+    current_fy = await get_current_fy(db, org_id)
+    current_fy_year = int(current_fy["fy_year"])
+
+    fy_by_year: dict[int, dict] = {}
+    for row in fy_rows:
+        fy_year = int(row["fy_year"])
+        if fy_year in fy_by_year:
+            continue
+        fy_by_year[fy_year] = {
+            "fy_year": fy_year,
+            "fy_label": str(row["fy_label"] or f"FY{fy_year % 100:02d}"),
+            "is_current": bool(row["is_current"]),
+        }
+
+    if current_fy_year not in fy_by_year:
+        fy_by_year[current_fy_year] = {
+            "fy_year": current_fy_year,
+            "fy_label": str(current_fy.get("fy_label") or f"FY{current_fy_year % 100:02d}"),
+            "is_current": True,
+        }
+
+    financial_years = []
+    for fy_year in sorted(fy_by_year.keys(), reverse=True):
+        fy_start = date(fy_year, fy_start_month, 1)
+        next_fy_start = date(fy_year + 1, fy_start_month, 1)
+        fy_end = next_fy_start - timedelta(days=1)
+
+        has_data_result = await db.execute(
+            text(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM financial_line_items
+                    WHERE organisation_id = :org_id
+                      AND period_start >= :fy_start
+                      AND period_end <= :fy_end
+                ) AS has_data
+                """
+            ),
+            {"org_id": org_id, "fy_start": fy_start, "fy_end": fy_end},
+        )
+        has_data = bool(has_data_result.scalar())
+
+        row = fy_by_year[fy_year]
+        financial_years.append(
+            {
+                "fy_year": fy_year,
+                "fy_label": row["fy_label"],
+                "fy_start": fy_start.isoformat(),
+                "fy_end": fy_end.isoformat(),
+                "is_current": bool(row["is_current"] or fy_year == current_fy_year),
+                "has_data": has_data,
+            }
+        )
+
+    return {"financial_years": financial_years}
 
 
 @router.patch("/reports/settings")
