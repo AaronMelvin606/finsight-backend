@@ -9,13 +9,17 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.core.database import get_db
+from app.models.organisation import Organisation
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -142,6 +146,7 @@ CLAUDE_MODEL = "claude-sonnet-4-20250514"
 async def generate_commentary(
     body: CommentaryRequest,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Generate AI commentary for a given finance module."""
 
@@ -157,6 +162,26 @@ async def generate_commentary(
         )
 
     system_prompt = MODULE_PROMPTS[body.module]
+
+    if current_user.organisation_id:
+        try:
+            res = await db.execute(
+                select(Organisation.org_context).where(
+                    Organisation.id == current_user.organisation_id
+                )
+            )
+            org_context = res.scalar_one_or_none()
+            if org_context and str(org_context).strip():
+                system_prompt = (
+                    f"{system_prompt}\n\nContext about this business: "
+                    f"{str(org_context).strip()}"
+                )
+        except Exception:
+            logger.exception(
+                "Skipping org_context for commentary | org=%s module=%s",
+                org_id,
+                body.module,
+            )
 
     # --- Call Anthropic API ---
     start = time.perf_counter()
@@ -224,5 +249,5 @@ async def generate_commentary(
     return CommentaryResponse(
         commentary=commentary,
         module=body.module,
-        generated_at=datetime.now(timezone.utc).isoformat(),
+        generated_at=datetime.utcnow().isoformat(),
     )

@@ -83,6 +83,7 @@ async def close_period(
             """
             UPDATE fiscal_year_months
             SET is_closed = TRUE,
+                is_completed = TRUE,
                 closed_at = :closed_at,
                 closed_by = :closed_by
             WHERE id = :id

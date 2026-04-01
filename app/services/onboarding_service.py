@@ -3,7 +3,7 @@ FinSight AI - Onboarding Service
 =================================
 Runs automatically after a customer connects their Xero account via OAuth.
 Fetches Chart of Accounts, auto-maps accounts, generates fiscal year rows,
-triggers an initial 12-month data sync, and marks onboarding complete.
+triggers an initial 24-month data sync, and marks onboarding complete.
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -127,7 +127,7 @@ async def run_onboarding(db: AsyncSession, org_id: str) -> dict:
       1. Fetch Xero Chart of Accounts
       2. Auto-map accounts into account_mappings
       3. Generate fiscal year rows
-      4. Trigger initial 12-month P&L + BS sync
+      4. Trigger initial 24-month P&L + BS sync
       5. Set onboarding_complete = true on the organisation
 
     Returns dict with: accounts_mapped, accounts_unmapped, fy_rows_created,
@@ -286,15 +286,15 @@ async def run_onboarding(db: AsyncSession, org_id: str) -> dict:
         logger.error(f"[ONBOARDING] Failed to generate FY rows for org={org_id}: {e}")
 
     # -----------------------------------------------------------------------
-    # STEP 5: Initial 12-month sync (P&L + Balance Sheet)
+    # STEP 5: Initial 24-month sync (P&L + Balance Sheet)
     # -----------------------------------------------------------------------
-    logger.info(f"[ONBOARDING] Step 4: Running initial 12-month sync for org={org_id}")
+    logger.info(f"[ONBOARDING] Step 4: Running initial 24-month sync for org={org_id}")
     try:
         # Import sync helpers from xero router (same pattern used by /sync endpoint)
         from app.routers.integrations.xero import _sync_pnl_monthly, _sync_bs_monthly
 
         today = date.today()
-        sync_start = today - relativedelta(months=12)
+        sync_start = today - relativedelta(months=24)
         # Align to first of month
         sync_start = sync_start.replace(day=1)
 

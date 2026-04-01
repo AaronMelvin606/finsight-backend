@@ -98,9 +98,6 @@ async def register(
     try:
         logger.info(f"[REGISTER] Starting registration for email={user_data.email}")
 
-        # Allowlist check — blocks all unauthorised registration attempts
-        await _check_registration_allowed(user_data.email, db)
-
         # Check if email already exists
         existing_user = await get_user_by_email(db, user_data.email)
         if existing_user:
@@ -428,6 +425,10 @@ async def request_password_reset(
                 f"[AUTH] Reset token generated but email failed "
                 f"for {data.email}"
             )
+            sentry_sdk.capture_message(
+                "Password reset email failed after token saved (user exists)",
+                level="error",
+            )
 
     return {
         "message": "If an account with that email exists, a password reset link has been sent."
@@ -453,6 +454,15 @@ async def confirm_password_reset(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token"
+        )
+
+    if (
+        user.password_reset_expires is None
+        or user.password_reset_expires < datetime.utcnow()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
         )
 
     user.hashed_password = get_password_hash(data.new_password)
@@ -489,9 +499,6 @@ async def register_simple(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="email, password, full_name, and organisation_name are all required"
         )
-
-    # Allowlist check — same gate as the ORM register endpoint
-    await _check_registration_allowed(email, db)
 
     # Check for existing email with raw SQL
     check_result = await db.execute(
