@@ -8,6 +8,8 @@ Company: FinSight AI Limited
 Website: https://www.finsightai.tech
 """
 
+import json
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -158,8 +160,8 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     def make_serialisable(value):
         """
-        Recursively convert any bytes values to UTF-8 strings so the
-        structure can be safely passed to JSONResponse.
+        Recursively convert non-JSON-serialisable objects (bytes, ValueError,
+        etc.) to strings so the structure can be safely passed to JSONResponse.
         """
         if isinstance(value, bytes):
             return value.decode("utf-8", errors="replace")
@@ -168,7 +170,11 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         if isinstance(value, (list, tuple, set)):
             t = type(value)
             return t(make_serialisable(v) for v in value)
-        return value
+        try:
+            json.dumps(value)
+            return value
+        except (TypeError, ValueError):
+            return str(value)
 
     headers = _get_cors_headers(request)
     return JSONResponse(
