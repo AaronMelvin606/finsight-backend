@@ -5,8 +5,9 @@ FastAPI backend for FinSight AI — a modular SaaS CFO platform. Deployed on Goo
 
 ## Infrastructure
 - Runtime: FastAPI on Google Cloud Run (us-central1)
-- Production revision: finsight-backend-00140-gfd (deployed 30 Mar 2026)
+- Production revision: finsight-backend-00146-qjp (deployed 3 Apr 2026)
 - Staging revision: finsight-backend-staging-00006-chg (deployed 30 Mar 2026)
+- Previous production revision: finsight-backend-00140-gfd (deployed 30 Mar 2026)
 - Database: Neon PostgreSQL (9 tables)
 - Custom domain: api.finsightai.tech → finsight-backend-520129376224.us-central1.run.app
 - Monitoring: Sentry (backend DSN), GCP Monitoring alerts
@@ -59,6 +60,7 @@ Revenue £36,284 − COGS £1,950 = GP £34,334; GP − OpEx £17,622 = EBITDA �
 - 4ac35f0: completed-periods endpoint, close-period via fiscal_year_months, generate_fy_rows refresh
 - 686ecc5: completed-periods — read month_number (not month_index)
 - 5ab70b5: initial Xero sync 24 months (prior-year comparison)
+- eb2c877: FY rollover backend fixes merged staging → main (3 Apr 2026)
 
 ## Environments (added 28 Mar 2026)
 
@@ -110,6 +112,14 @@ Run in FinSight-AI---Professional-Growth-Suite:
 - **`generate_fy_rows()`** runs an **UPDATE** after **INSERT** that refreshes stale **`is_completed = false`** rows for past months.
 - Initial Xero sync pulls **24 months** of history (not 12) so Revenue Summary can compare to the prior year.
 
+## GET /reports/available-fys (3 Apr 2026)
+
+- Returns list of financial years for the authenticated user's org
+- Response fields per FY: fy_year, fy_label, fy_start, fy_end, is_current, has_data
+- Only shows FYs from the fiscal_years table
+- has_data checks financial_line_items existence within the FY date range
+- Used by frontend FY selector dropdown
+
 ## GET /reports/completed-periods (30 Mar 2026)
 
 - **`total_completed`** and **`latest_completed`** are scoped to the **current FY only**.
@@ -150,6 +160,11 @@ Run in FinSight-AI---Professional-Growth-Suite:
 - February 2026 closed manually 28 Mar 2026 by aaron@finsightai.tech
 - March 2026 becomes closeable after 31 March 2026
 
+## Period scoping architecture (3 Apr 2026)
+
+- is_completed does NOT gate any backend SQL queries. All report endpoints accept period_start and period_end parameters. The frontend controls period scoping via FY context, not the backend.
+- _resolve_default_period_end() is a fallback only — frontend always sends explicit period_start/period_end when an FY is selected. The fallback exists for backwards compatibility and direct API calls without FY context.
+
 ## WS4.5 backlog — auto-close overdue periods
 
 - Auto-close any is_completed=true, is_closed=false months where end date
@@ -173,6 +188,12 @@ e2133fc — fix: POST /close-period 500 — YYYY-MM breaks ::date cast
 4ac35f0 — feat: add completed-periods endpoint, update close-period to use fiscal_year_months, fix generate_fy_rows refresh
 686ecc5 — fix: read month_number instead of month_index in completed-periods endpoint
 5ab70b5 — feat: extend initial Xero sync from 12 to 24 months for prior year comparison
+
+## Session commit trail — 3 Apr 2026
+
+eb2c877 — merge: staging into main — FY rollover backend fixes (verified on staging)
+f1bb211 — merge: feat/fy-selector into staging — FY rollover backend fixes
+157045d — feat: GET /reports/available-fys endpoint for FY selector
 
 ## Known issues (30 Mar 2026)
 
