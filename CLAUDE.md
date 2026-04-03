@@ -207,5 +207,6 @@ Full project context and live session status live in the Obsidian vault at:
 Key files to read at the start of every session:
 - ../FinSight-AI-Vault/00-Context/project-master.md — permanent project context
 - ../FinSight-AI-Vault/02-Sessions/session-handoff.md — current workstream status, beta users, open items
+- ../FinSight-AI-Vault/00-Context/ways-of-working.md — tool split, workflow patterns, Cursor interface definitions
 
 At the start of every build session, read both files before writing any code.
