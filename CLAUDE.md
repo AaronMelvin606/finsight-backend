@@ -199,3 +199,13 @@ f1bb211 — merge: feat/fy-selector into staging — FY rollover backend fixes
 
 - **Duplicate org names in production:** two organisations both named "FinSight AI": **`2a291c1b-926e-4e2f-9dfa-5fc717960b4c`** (sandbox, **aaron@finsightai.tech**) and **`109ff319`** (**aaronmelvin123@gmail.com**). **`fiscal_year_months`** is only populated for the sandbox org. Multi-org cleanup needed.
 - **`next_to_complete`:** **`null`** on staging (no incomplete months in staging data) vs **`"2026-03"`** on production — data difference, not a bug.
+
+## Obsidian Vault
+Full project context and live session status live in the Obsidian vault at:
+../FinSight-AI-Vault/
+
+Key files to read at the start of every session:
+- ../FinSight-AI-Vault/00-Context/project-master.md — permanent project context
+- ../FinSight-AI-Vault/02-Sessions/session-handoff.md — current workstream status, beta users, open items
+
+At the start of every build session, read both files before writing any code.
