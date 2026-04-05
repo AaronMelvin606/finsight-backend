@@ -6,6 +6,7 @@ API endpoints for user authentication with organisation context.
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
@@ -594,3 +595,111 @@ async def login_simple(
 
     logger.info(f"[LOGIN-SIMPLE] Successful login for email={email}")
     return {"access_token": access_token, "token_type": "bearer"}
+
+
+# ---------------------------------------------------------------------------
+# Multi-org endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/my-orgs")
+async def get_my_orgs(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    List all organisations the current user belongs to,
+    with Xero connection status and active flag.
+    """
+    rows = await db.execute(
+        text(
+            "SELECT o.id, o.name, "
+            "  (EXISTS (SELECT 1 FROM xero_connections xc "
+            "           WHERE xc.organisation_id = o.id AND xc.is_active = true)) AS xero_connected "
+            "FROM organisation_members om "
+            "JOIN organisations o ON o.id = om.organisation_id "
+            "WHERE om.user_id = :user_id "
+            "ORDER BY o.name"
+        ),
+        {"user_id": str(current_user.id)},
+    )
+    orgs = []
+    for row in rows.fetchall():
+        orgs.append({
+            "id": str(row.id),
+            "name": row.name,
+            "xero_connected": bool(row.xero_connected),
+            "is_active": str(row.id) == str(current_user.active_org_id) if current_user.active_org_id else False,
+        })
+    return {"orgs": orgs}
+
+
+class SwitchOrgRequest(BaseModel):
+    org_id: str
+
+
+@router.post("/switch-org", response_model=UserWithOrganisation)
+async def switch_org(
+    body: SwitchOrgRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Switch the user's active organisation.
+    Returns the same shape as GET /auth/me so the frontend can update all state in one call.
+    """
+    # Verify membership
+    membership = await db.execute(
+        text(
+            "SELECT 1 FROM organisation_members "
+            "WHERE user_id = :user_id AND organisation_id = :org_id"
+        ),
+        {"user_id": str(current_user.id), "org_id": body.org_id},
+    )
+    if not membership.fetchone():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this organisation",
+        )
+
+    # Update active_org_id
+    await db.execute(
+        text("UPDATE users SET active_org_id = :org_id WHERE id = :user_id"),
+        {"org_id": body.org_id, "user_id": str(current_user.id)},
+    )
+    await db.commit()
+
+    # Re-fetch user with relationships for response
+    refreshed = await db.execute(
+        select(User)
+        .options(selectinload(User.active_organisation), selectinload(User.organisation))
+        .where(User.id == current_user.id)
+    )
+    user = refreshed.scalar_one()
+
+    response = UserWithOrganisation(
+        id=str(user.id),
+        email=user.email,
+        full_name=user.full_name,
+        job_title=user.job_title,
+        is_active=user.is_active,
+        is_verified=user.is_verified,
+        role=user.role or "member",
+        organisation_id=str(user.organisation_id) if user.organisation_id else None,
+        active_org_id=str(user.active_org_id) if user.active_org_id else None,
+        created_at=user.created_at,
+        last_login_at=user.last_login_at,
+    )
+
+    org = user.active_organisation or user.organisation
+    if org:
+        org_settings = org.settings or {}
+        response.organisation = {
+            "id": str(org.id),
+            "name": org.name,
+            "slug": org.slug,
+            "subscription_tier": org.subscription_tier,
+            "xero_connected": str(org_settings.get("onboarding_complete", "")).lower() == "true",
+            "settings": org_settings,
+        }
+
+    return response
