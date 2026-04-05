@@ -87,7 +87,10 @@ async def get_user_by_id(db: AsyncSession, user_id: UUID) -> Optional[User]:
     """Get user by ID with organisation loaded."""
     result = await db.execute(
         select(User)
-        .options(selectinload(User.organisation))
+        .options(
+            selectinload(User.organisation),
+            selectinload(User.active_organisation),
+        )
         .where(User.id == user_id)
     )
     return result.scalar_one_or_none()
