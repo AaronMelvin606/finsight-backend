@@ -23,6 +23,8 @@ import os
 import urllib.parse
 import json
 
+from app.core.encryption import encrypt_token, safe_decrypt
+
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.services.onboarding_service import run_onboarding
@@ -128,7 +130,7 @@ async def _refresh_tokens_if_needed(db: AsyncSession, org_id: str) -> dict:
     # Refresh if within 5 minutes of expiry
     if row.token_expires_at and row.token_expires_at > now + timedelta(minutes=5):
         return {
-            "access_token": row.access_token,
+            "access_token": safe_decrypt(row.access_token),
             "xero_tenant_id": row.xero_tenant_id,
             "connection_id": str(row.id),
         }
@@ -140,7 +142,7 @@ async def _refresh_tokens_if_needed(db: AsyncSession, org_id: str) -> dict:
             XERO_TOKEN_URL,
             data={
                 "grant_type": "refresh_token",
-                "refresh_token": row.refresh_token,
+                "refresh_token": safe_decrypt(row.refresh_token),
                 "client_id": XERO_CLIENT_ID,
                 "client_secret": XERO_CLIENT_SECRET,
             },
@@ -173,8 +175,10 @@ async def _refresh_tokens_if_needed(db: AsyncSession, org_id: str) -> dict:
             "WHERE id = :id"
         ),
         {
-            "access_token": tokens["access_token"],
-            "refresh_token": tokens.get("refresh_token", row.refresh_token),
+            "access_token": encrypt_token(tokens["access_token"]),
+            "refresh_token": encrypt_token(
+                tokens.get("refresh_token") or safe_decrypt(row.refresh_token)
+            ),
             "expires_at": new_expires,
             "id": str(row.id),
         }
@@ -875,8 +879,8 @@ async def xero_callback(
             "org_id": org_id,
             "tenant_id": tenant_id,
             "tenant_name": tenant_name,
-            "access_token": access_token,
-            "refresh_token": refresh_token,
+            "access_token": encrypt_token(access_token),
+            "refresh_token": encrypt_token(refresh_token) if refresh_token else "",
             "expires_at": token_expires_at,
             "scopes": XERO_SCOPES,
         }
@@ -1166,7 +1170,7 @@ async def xero_disconnect(
         async with httpx.AsyncClient() as client:
             await client.delete(
                 XERO_CONNECTIONS_URL,
-                headers={"Authorization": f"Bearer {row.access_token}"},
+                headers={"Authorization": f"Bearer {safe_decrypt(row.access_token)}"},
                 timeout=10.0,
             )
     except Exception as e:

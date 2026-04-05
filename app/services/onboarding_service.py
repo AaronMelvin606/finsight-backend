@@ -13,6 +13,8 @@ from dateutil.relativedelta import relativedelta
 import httpx
 import uuid
 import json
+
+from app.core.encryption import safe_decrypt
 import logging
 
 from app.services.fiscal_year_service import generate_fy_rows
@@ -173,7 +175,7 @@ async def run_onboarding(db: AsyncSession, org_id: str) -> dict:
         logger.error(f"[ONBOARDING] No active Xero connection for org={org_id}")
         raise Exception("No active Xero connection found")
 
-    access_token = row.access_token
+    access_token = safe_decrypt(row.access_token)
     tenant_id = row.xero_tenant_id
 
     # -----------------------------------------------------------------------
