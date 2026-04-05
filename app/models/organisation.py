@@ -6,7 +6,7 @@ SQLAlchemy models for organisations (tenants) and memberships.
 
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum, Text, Integer, JSON
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum, Text, Integer, JSON, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 import enum
@@ -173,7 +173,10 @@ class OrganisationMember(Base):
     A user can belong to multiple organisations with different roles.
     """
     __tablename__ = "organisation_members"
-    
+    __table_args__ = (
+        UniqueConstraint("organisation_id", "user_id", name="uq_org_member_org_user"),
+    )
+
     # Primary key
     id = Column(
         UUID(as_uuid=True),

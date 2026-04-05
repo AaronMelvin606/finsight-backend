@@ -55,11 +55,13 @@ class User(Base):
     verification_token = Column(String(255), nullable=True)
 
     # Multi-tenancy fields
-    organisation_id = Column(UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=True)
+    organisation_id = Column(UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=True)  # deprecated — use active_org_id
+    active_org_id = Column(UUID(as_uuid=True), ForeignKey("organisations.id", ondelete="SET NULL"), nullable=True)
     role = Column(String(50), default="member")  # owner, admin, member, viewer
 
     # Relationships
     organisation = relationship("Organisation", back_populates="users", foreign_keys=[organisation_id])
+    active_organisation = relationship("Organisation", foreign_keys=[active_org_id])
     organisation_memberships = relationship(
         "OrganisationMember",
         back_populates="user",
