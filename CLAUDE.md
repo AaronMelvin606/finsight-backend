@@ -5,16 +5,16 @@ FastAPI backend for FinSight AI — a modular SaaS CFO platform. Deployed on Goo
 
 ## Infrastructure
 - Runtime: FastAPI on Google Cloud Run (us-central1)
-- Production revision: finsight-backend-00146-qjp (deployed 3 Apr 2026)
+- Production revision: finsight-backend-00156-wrh (deployed 5 Apr 2026)
 - Staging revision: finsight-backend-staging-00006-chg (deployed 30 Mar 2026)
 - Previous production revision: finsight-backend-00140-gfd (deployed 30 Mar 2026)
-- Database: Neon PostgreSQL (9 tables)
+- Database: Neon PostgreSQL (10 tables)
 - Custom domain: api.finsightai.tech → finsight-backend-520129376224.us-central1.run.app
 - Monitoring: Sentry (backend DSN), GCP Monitoring alerts
 - Analytics: PostHog (eu.posthog.com)
 
 ## Neon tables
-users, organisations, xero_connections, account_mappings, budget_monthly, fiscal_years, fiscal_year_months, financial_line_items, registration_allowlist
+users, organisations, xero_connections, account_mappings, budget_monthly, fiscal_years, fiscal_year_months, financial_line_items, registration_allowlist, organisation_members
 
 ## Sandbox constants
 - Org ID: 2a291c1b-926e-4e2f-9dfa-5fc717960b4c
@@ -26,7 +26,7 @@ users, organisations, xero_connections, account_mappings, budget_monthly, fiscal
 
 ## Non-negotiable rules
 - All KPI calculations live in the backend. Never move calculations to the frontend.
-- Budget ingestion: Path A (Xero GET /budgets) is always preferred. Path B (CSV upload) is the fallback.
+- Budget ingestion: Path A (Xero GET /budgets) is always preferred. Path B (CSV upload) is the fallback. Path C (POST /budgets/generate-from-actuals) auto-drafts from prior year actuals.
 - getDefaultPeriodEnd() must return the last day of the previous completed month — never today's date.
 - Period labels must be human-readable e.g. "Apr 2025 — Feb 2026" — never ISO strings.
 - UK FY convention: FY year = calendar year of start month. April 2025–March 2026 = FY25.
@@ -125,6 +125,17 @@ Run in FinSight-AI---Professional-Growth-Suite:
 - **`total_completed`** and **`latest_completed`** are scoped to the **current FY only**.
 - The **`completed_periods`** array lists completed months across **all FYs** (full history).
 
+## Multi-org architecture (live 5 April 2026)
+
+- Junction table: organisation_members (user_id, organisation_id, role)
+- New column: users.active_org_id (UUID FK → organisations.id)
+- All endpoints resolve org from active_org_id (not organisation_id)
+- users.organisation_id kept as deprecated legacy column — do not drop
+- New endpoints: GET /auth/my-orgs, POST /auth/switch-org
+- New admin endpoint: POST /admin/orgs/{org_id}/sync (X-Admin-Token)
+- Xero OAuth callback supports multi-org: creates new org on additional connect
+- Dedup guard: returns xero_error=already_connected if tenant already linked
+
 ## organisation_members table (added 28 Mar 2026)
 
 - Columns: id (uuid), organisation_id, user_id, role, invited_by_id,
@@ -139,7 +150,7 @@ Run in FinSight-AI---Professional-Growth-Suite:
 
 - Route MUST be registered before GET /{org_id} to prevent "me" being
   treated as a UUID and crashing the DB query
-- Resolves org in order: (1) fresh DB lookup on users.organisation_id,
+- Resolves org in order: (1) fresh DB lookup on users.active_org_id,
   (2) in-memory current_user.organisation_id, (3) organisation_members row
 - get_organisation allows access if no membership row exists but
   users.organisation_id matches — handles legacy/inconsistent data
@@ -194,6 +205,33 @@ e2133fc — fix: POST /close-period 500 — YYYY-MM breaks ::date cast
 eb2c877 — merge: staging into main — FY rollover backend fixes (verified on staging)
 f1bb211 — merge: feat/fy-selector into staging — FY rollover backend fixes
 157045d — feat: GET /reports/available-fys endpoint for FY selector
+
+## Session commit trail — 5 Apr 2026
+
+883d069 — feat: POST /admin/orgs/{org_id}/sync for admin-level resyncs
+501411c — feat: set active_org_id on registration, eager-load active_organisation
+0d09e39 — feat: extend Xero OAuth callback to support multi-org connect
+57d72ef — feat: GET /auth/my-orgs and POST /auth/switch-org endpoints
+6702c4e — feat: resolve active org from active_org_id across all endpoints
+
+## Budget boundary detection (5 Apr 2026)
+
+- **budget_monthly.source** column added (VARCHAR 20, nullable). Values: `xero_sync`, `csv_upload`, `auto_prior_year`, NULL (legacy rows).
+- **budget_service.py** (`app/services/budget_service.py`): shared helpers `get_budget_status()` and `get_budget_source()`. Used by reports.py and commentary.py.
+- **Budget status detection**: all 5 AvB endpoints (`/reports/avb`, `/reports/avb-kpis`, `/reports/avb-bridge`, `/reports/avb-summary`, `/reports/trend`) now return `budget_status` (`no_budget` | `partial_budget` | `full_budget`) and `budget_source` (`xero_sync` | `csv_upload` | `auto_prior_year` | null).
+- **Commentary skip**: `POST /commentary/generate` skips the Anthropic API call and returns `{"skip": true, "reason": "no_budget", ...}` when `module = "actual_vs_budget"` and no budget exists for the current FY. Other modules (executive_summary, revenue_summary, scenario_planning) are unaffected.
+- **POST /budgets/generate-from-actuals**: auto-generates current FY budget from prior year actuals. Reads `financial_line_items` for FY(N-1), shifts periods +1 year, writes to `budget_monthly` with `source = 'auto_prior_year'`. Returns 409 if budget already exists, 404 if no prior year actuals.
+- **Migration**: `app/db/migrations/add_source_to_budget_monthly.sql` — run on staging first, then production.
+- **Two budget tables exist**: `budget_monthly` (used by all AvB queries, Xero sync, CSV upload) and `budgets` (orphan CRUD table, not used by reporting). See P3 item 3M in session-handoff.md.
+
+## Session commit trail — 5 Apr 2026 (budget boundary detection)
+
+96d8a5e — feat(schema): add source column to budget_monthly
+174421a — feat(budget): add budget_service with get_budget_status helper
+6b1a019 — feat(reports): add budget_status and budget_source to all AvB endpoints
+a6fbfbd — feat(commentary): skip AI call when no budget exists for AvB module
+909c80b — feat(budgets): POST /budgets/generate-from-actuals endpoint
+b75ad37 — feat(budget): set source column on Xero sync and CSV upload writes
 
 ## Known issues (30 Mar 2026)
 
