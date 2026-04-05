@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -21,6 +21,7 @@ from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.models.organisation import Organisation
 from app.models.user import User
+from app.services.budget_service import get_budget_status
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,31 @@ async def generate_commentary(
     """Generate AI commentary for a given finance module."""
 
     org_id = str(current_user.active_org_id) if current_user.active_org_id else "unknown"
+
+    # --- Budget boundary check (AvB module only) ---
+    if body.module == "actual_vs_budget" and current_user.active_org_id:
+        fy_start_month = 4
+        today = date.today()
+        fy_year = today.year if today.month >= fy_start_month else today.year - 1
+        fy_s = date(fy_year, fy_start_month, 1)
+        fy_e = date(fy_year + 1, fy_start_month, 1) - timedelta(days=1)
+        budget_status = await get_budget_status(db, org_id, fy_s, fy_e)
+        if budget_status == "no_budget":
+            logger.info(
+                "Commentary skipped — no budget | module=%s org=%s",
+                body.module, org_id,
+            )
+            return CommentaryResponse(
+                commentary={
+                    "skip": True,
+                    "reason": "no_budget",
+                    "message": "No budget found for the current financial year. "
+                               "Upload a budget, sync from Xero, or generate one "
+                               "from prior year actuals to enable AI commentary.",
+                },
+                module=body.module,
+                generated_at=datetime.utcnow().isoformat(),
+            )
 
     # --- Check API key ---
     api_key = os.environ.get("ANTHROPIC_API_KEY")
