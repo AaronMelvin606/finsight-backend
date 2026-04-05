@@ -19,6 +19,22 @@ from app.services.fiscal_year_service import generate_fy_rows
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Natural sign by Xero account type (revenue/income = +1, costs/expenses = -1)
+# ---------------------------------------------------------------------------
+_NATURAL_SIGN_MAP = {
+    "REVENUE": 1,
+    "SALES": 1,
+    "OTHERINCOME": 1,
+    "DIRECTCOSTS": -1,
+    "OVERHEADS": -1,
+    "EXPENSE": -1,
+    "OTHEREXPENSES": -1,
+    "DEPRECIATN": -1,
+    "SUPERANNUATIONEXPENSE": -1,
+    "WAGESEXPENSE": -1,
+}
+
 XERO_API_BASE = "https://api.xero.com/api.xro/2.0"
 
 
@@ -248,7 +264,7 @@ async def run_onboarding(db: AsyncSession, org_id: str) -> dict:
                     "xero_type": xero_type,
                     "category": mapping["reporting_category"],
                     "stmt_type": mapping["statement_type"],
-                    "sign": 1,
+                    "sign": _NATURAL_SIGN_MAP.get(xero_type.upper(), 1),
                     "pnl": mapping["include_in_pnl"],
                     "bs": mapping["include_in_bs"],
                     "is_mapped": mapping["is_mapped"],
