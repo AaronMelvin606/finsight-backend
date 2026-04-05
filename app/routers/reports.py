@@ -83,7 +83,7 @@ async def budget_upload(
 
     Optional query param: fiscal_year (default: current FY with April start).
     """
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     if not org_id:
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 
@@ -207,7 +207,7 @@ async def get_completed_periods(
     List months marked completed (auto or manual) for Period Close / Settings UI.
     month_period is normalised as YYYY-MM via substring — never cast to ::date.
     """
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     if not org_id or org_id == "None":
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 
@@ -337,7 +337,7 @@ async def actual_vs_budget(
     Actual vs Budget detail by account.
     Returns one row per P&L account that has either actuals or budgets in the period.
     """
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
 
     result = await db.execute(
         text("""
@@ -479,7 +479,7 @@ async def avb_kpis(
     Actuals from financial_line_items + account_mappings (natural_sign applied);
     budget from budget_monthly. All calculations backend-only; divide-by-zero returns 0.0.
     """
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     if not org_id:
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 
@@ -667,7 +667,7 @@ async def avb_bridge(
     current_user: User = Depends(get_current_user),
 ):
     """EBITDA variance waterfall bridge."""
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
 
     result = await db.execute(
         text("""
@@ -757,7 +757,7 @@ async def avb_summary(
     current_user: User = Depends(get_current_user),
 ):
     """Summary by reporting category (REVENUE, COGS, OPEX)."""
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     fy_start_month = await _get_fy_start_month(db, org_id)
     ps = period_start if period_start is not None else _default_period_start(fy_start_month)
     pe = period_end if period_end is not None else await _resolve_default_period_end(db, org_id)
@@ -841,7 +841,7 @@ async def monthly_trend(
     current_user: User = Depends(get_current_user),
 ):
     """Monthly trend data for trend chart."""
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     fy_start_month = await _get_fy_start_month(db, org_id)
     ps = period_start if period_start is not None else _default_period_start(fy_start_month)
     pe = period_end if period_end is not None else await _resolve_default_period_end(db, org_id)
@@ -899,7 +899,7 @@ async def actuals(
     current_user: User = Depends(get_current_user),
 ):
     """Actuals by account for a given period."""
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     fy_start_month = await _get_fy_start_month(db, org_id)
     ps = period_start if period_start is not None else _default_period_start(fy_start_month)
     pe = period_end if period_end is not None else await _resolve_default_period_end(db, org_id)
@@ -961,7 +961,7 @@ async def data_health(
     Returns mapping coverage, budget coverage, and data completeness.
     Handles xero_connections schema differences safely.
     """
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
 
     # Mapping coverage
     mapping_result = await db.execute(
@@ -1141,7 +1141,7 @@ async def balance_sheet(
     Balance Sheet report as of a given date.
     Default as_of_date = latest closed fiscal month end, else last day of previous calendar month.
     """
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
 
     if as_of_date:
         aod = date.fromisoformat(as_of_date)
@@ -1288,7 +1288,7 @@ async def get_report_settings(
     current_user: User = Depends(get_current_user),
 ):
     """Return report settings for the current organisation."""
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     fy_start_month = await _get_fy_start_month(db, org_id)
     return {"fy_start_month": fy_start_month}
 
@@ -1299,7 +1299,7 @@ async def get_fy_context_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     """Return fiscal year context for the current organisation."""
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     await ensure_fiscal_months_current(db, org_id)
     return await get_fy_context(db, org_id)
 
@@ -1310,7 +1310,7 @@ async def get_available_fys(
     current_user: User = Depends(get_current_user),
 ):
     """Return fiscal years for selector UI, including whether each FY has data."""
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     if not org_id or org_id == "None":
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 
@@ -1393,7 +1393,7 @@ async def update_report_settings(
     current_user: User = Depends(get_current_user),
 ):
     """Update report settings for the current organisation."""
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     fy_start_month = payload.get("fy_start_month")
     if fy_start_month is None:
         raise HTTPException(status_code=422, detail="fy_start_month is required")

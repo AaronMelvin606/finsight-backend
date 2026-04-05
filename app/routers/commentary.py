@@ -150,7 +150,7 @@ async def generate_commentary(
 ):
     """Generate AI commentary for a given finance module."""
 
-    org_id = str(current_user.organisation_id) if current_user.organisation_id else "unknown"
+    org_id = str(current_user.active_org_id) if current_user.active_org_id else "unknown"
 
     # --- Check API key ---
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -163,11 +163,11 @@ async def generate_commentary(
 
     system_prompt = MODULE_PROMPTS[body.module]
 
-    if current_user.organisation_id:
+    if current_user.active_org_id:
         try:
             res = await db.execute(
                 select(Organisation.org_context).where(
-                    Organisation.id == current_user.organisation_id
+                    Organisation.id == current_user.active_org_id
                 )
             )
             org_context = res.scalar_one_or_none()

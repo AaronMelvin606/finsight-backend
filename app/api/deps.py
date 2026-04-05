@@ -63,13 +63,13 @@ async def get_current_active_user(
 async def get_current_organisation_id(
     current_user: User = Depends(get_current_user)
 ) -> UUID:
-    """Get current user's organisation ID - required for data access."""
-    if not current_user.organisation_id:
+    """Get current user's active organisation ID - required for data access."""
+    if not current_user.active_org_id:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User is not associated with an organisation"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active organisation. Please connect a Xero account to continue."
         )
-    return current_user.organisation_id
+    return current_user.active_org_id
 
 
 def require_role(allowed_roles: List[str]):

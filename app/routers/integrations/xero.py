@@ -87,12 +87,12 @@ XERO_TYPE_MAPPING = {
 # Helper: extract org_id from current_user (raw SQL pattern)
 # ---------------------------------------------------------------------------
 def _get_org_id(current_user) -> str:
-    """Extract organisation_id from the authenticated user object."""
-    org_id = getattr(current_user, "organisation_id", None)
+    """Extract active_org_id from the authenticated user object."""
+    org_id = getattr(current_user, "active_org_id", None)
     if org_id is None:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User is not associated with an organisation"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active organisation. Please connect a Xero account to continue."
         )
     return str(org_id)
 

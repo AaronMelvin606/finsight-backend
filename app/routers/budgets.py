@@ -62,7 +62,7 @@ async def list_budgets(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     query = """
         SELECT id, budget_name, account_code, account_name,
                reporting_category, fiscal_year, budget_month, amount,
@@ -99,7 +99,7 @@ async def create_budget(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     result = await db.execute(
         text("""
             INSERT INTO budgets
@@ -156,7 +156,7 @@ async def bulk_create_budgets(
 
     Upserts on (organisation_id, account_code, fiscal_year, budget_month).
     """
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
 
     contents = await file.read()
     decoded = contents.decode("utf-8")
@@ -272,7 +272,7 @@ async def update_budget(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     result = await db.execute(
         text("""
             UPDATE budgets
@@ -300,7 +300,7 @@ async def delete_budget(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     result = await db.execute(
         text("""
             DELETE FROM budgets

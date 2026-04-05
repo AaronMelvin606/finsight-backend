@@ -315,17 +315,20 @@ async def get_current_user_info(
         is_verified=current_user.is_verified,
         role=current_user.role or "member",
         organisation_id=str(current_user.organisation_id) if current_user.organisation_id else None,
+        active_org_id=str(current_user.active_org_id) if current_user.active_org_id else None,
         created_at=current_user.created_at,
         last_login_at=current_user.last_login_at,
     )
 
-    if current_user.organisation:
-        org_settings = current_user.organisation.settings or {}
+    # Resolve org details from active_organisation (multi-org), fall back to legacy organisation
+    org = current_user.active_organisation or current_user.organisation
+    if org:
+        org_settings = org.settings or {}
         response.organisation = {
-            "id": str(current_user.organisation.id),
-            "name": current_user.organisation.name,
-            "slug": current_user.organisation.slug,
-            "subscription_tier": current_user.organisation.subscription_tier,
+            "id": str(org.id),
+            "name": org.name,
+            "slug": org.slug,
+            "subscription_tier": org.subscription_tier,
             "xero_connected": str(org_settings.get("onboarding_complete", "")).lower() == "true",
             "settings": org_settings,
         }

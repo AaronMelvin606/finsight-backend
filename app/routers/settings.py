@@ -27,7 +27,7 @@ async def get_settings(
     current_user: User = Depends(get_current_user),
 ):
     """Return report settings for the current organisation (alias for GET /reports/settings)."""
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     if not org_id or org_id == "None":
         raise HTTPException(status_code=403, detail="Organisation not set for user")
     result = await db.execute(
@@ -49,7 +49,7 @@ async def close_period(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     if not org_id or org_id == "None":
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 
@@ -111,7 +111,7 @@ async def reopen_period(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     if not org_id or org_id == "None":
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 

@@ -103,6 +103,7 @@ class UserResponse(BaseModel):
     is_verified: bool
     role: str = "member"
     organisation_id: Optional[str] = None
+    active_org_id: Optional[str] = None
     created_at: datetime
     last_login_at: Optional[datetime] = None
 

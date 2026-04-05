@@ -28,7 +28,7 @@ async def list_mappings(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     result = await db.execute(
         text("""
             SELECT id, xero_account_id, account_code, account_name,
@@ -50,7 +50,7 @@ async def list_unmapped(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     result = await db.execute(
         text("""
             SELECT id, xero_account_id, account_code, account_name, xero_account_type
@@ -72,7 +72,7 @@ async def update_mapping(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     result = await db.execute(
         text("""
             UPDATE account_mappings
@@ -101,7 +101,7 @@ async def mapping_summary(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    org_id = str(current_user.organisation_id)
+    org_id = str(current_user.active_org_id)
     result = await db.execute(
         text("""
             SELECT

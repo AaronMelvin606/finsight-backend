@@ -150,7 +150,7 @@ async def get_my_organisation(
     )
     org_id = fresh.scalar_one_or_none()
     if org_id is None:
-        org_id = current_user.organisation_id
+        org_id = current_user.active_org_id
     if not org_id:
         mem = await db.execute(
             select(OrganisationMember.organisation_id)
@@ -188,7 +188,7 @@ async def get_organisation(
     membership = membership_result.scalar_one_or_none()
 
     if not membership:
-        if current_user.organisation_id is None or str(current_user.organisation_id) != org_id:
+        if current_user.active_org_id is None or str(current_user.active_org_id) != org_id:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Organisation not found"
