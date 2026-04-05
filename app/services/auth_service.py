@@ -177,6 +177,7 @@ async def create_user_with_organisation(
             full_name=user_data.full_name,
             job_title=user_data.job_title,
             organisation_id=organisation.id,
+            active_org_id=organisation.id,
             role="owner",
             is_active=True,
             is_verified=False,
@@ -228,7 +229,7 @@ async def create_user_with_organisation(
     try:
         result = await db.execute(
             select(User)
-            .options(selectinload(User.organisation))
+            .options(selectinload(User.organisation), selectinload(User.active_organisation))
             .where(User.id == user.id)
         )
         user = result.scalar_one()
