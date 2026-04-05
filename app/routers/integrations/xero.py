@@ -26,6 +26,9 @@ import json
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.services.onboarding_service import run_onboarding
+from app.services.auth_service import generate_slug
+from sqlalchemy import select
+from app.models.organisation import Organisation
 
 logger = logging.getLogger(__name__)
 
@@ -620,6 +623,9 @@ async def xero_connect(
     Initiate Xero OAuth 2.0 Authorization Code flow.
     Accepts JWT via Authorization header OR ?token= query parameter (dev mode).
     Redirects user to Xero login page.
+
+    State parameter carries user_id (not org_id) so the callback can
+    create a new organisation for multi-org connect.
     """
     from app.core.security import decode_token as _decode
 
@@ -639,11 +645,11 @@ async def xero_connect(
         )
 
     payload = _decode(jwt_token)
-    org_id = payload.get("org_id")
-    if not org_id:
+    user_id = payload.get("sub")
+    if not user_id:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No org_id in token"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token — no user identifier"
         )
 
     if not XERO_CLIENT_ID or not XERO_REDIRECT_URI:
@@ -652,8 +658,8 @@ async def xero_connect(
             detail="Xero OAuth not configured. Check XERO_CLIENT_ID and XERO_REDIRECT_URI."
         )
 
-    # State parameter encodes org_id for the callback
-    state = f"{org_id}:{uuid.uuid4().hex[:16]}"
+    # State parameter encodes user_id for the callback (multi-org aware)
+    state = f"{user_id}:{uuid.uuid4().hex[:16]}"
 
     params = {
         "response_type": "code",
@@ -664,7 +670,7 @@ async def xero_connect(
     }
 
     auth_url = f"{XERO_AUTH_URL}?{urllib.parse.urlencode(params)}"
-    logger.info(f"[XERO] Redirecting org={org_id} to Xero OAuth")
+    logger.info(f"[XERO] Redirecting user={user_id} to Xero OAuth")
     return RedirectResponse(url=auth_url)
 
 
@@ -676,7 +682,10 @@ async def xero_callback(
     """
     Handle Xero OAuth callback. Exchanges code for tokens, stores connection.
     NOTE: This endpoint does NOT require JWT auth — Xero redirects here directly.
-    The org_id is recovered from the state parameter.
+    The user_id is recovered from the state parameter.
+
+    Multi-org aware: creates a new organisation for each Xero tenant connected.
+    Dedup guard prevents the same tenant being connected twice by the same user.
     """
     code = request.query_params.get("code")
     state = request.query_params.get("state", "")
@@ -691,9 +700,9 @@ async def xero_callback(
     if not code:
         raise HTTPException(status_code=400, detail="Missing authorisation code")
 
-    # Extract org_id from state
-    org_id = state.split(":")[0] if ":" in state else ""
-    if not org_id:
+    # Extract user_id from state (multi-org: state carries user_id, not org_id)
+    user_id = state.split(":")[0] if ":" in state else ""
+    if not user_id:
         raise HTTPException(status_code=400, detail="Invalid state parameter")
 
     # Exchange code for tokens
@@ -748,7 +757,98 @@ async def xero_callback(
     tenant_id = tenant.get("tenantId", "")
     tenant_name = tenant.get("tenantName", "")
 
-    # Upsert xero_connections (one connection per org)
+    # -----------------------------------------------------------------------
+    # DEDUP CHECK: does this user already have an org connected to this tenant?
+    # -----------------------------------------------------------------------
+    dedup = await db.execute(
+        text(
+            "SELECT xc.organisation_id FROM xero_connections xc "
+            "JOIN organisation_members om ON om.organisation_id = xc.organisation_id "
+            "WHERE om.user_id = :user_id "
+            "  AND xc.xero_tenant_id = :tenant_id "
+            "  AND xc.is_active = true "
+            "LIMIT 1"
+        ),
+        {"user_id": user_id, "tenant_id": tenant_id},
+    )
+    if dedup.fetchone():
+        logger.warning(
+            f"[XERO] Dedup: user={user_id} already has tenant={tenant_id} connected"
+        )
+        return RedirectResponse(
+            url=f"{FRONTEND_URL}/?xero_error=already_connected"
+        )
+
+    # -----------------------------------------------------------------------
+    # Check if user already has any orgs (determines first vs additional connect)
+    # -----------------------------------------------------------------------
+    existing_orgs = await db.execute(
+        text(
+            "SELECT COUNT(*) AS cnt FROM organisation_members WHERE user_id = :user_id"
+        ),
+        {"user_id": user_id},
+    )
+    is_first_connect = existing_orgs.scalar_one() == 0
+
+    # -----------------------------------------------------------------------
+    # Create new organisation for this Xero tenant
+    # -----------------------------------------------------------------------
+    org_name = tenant_name or "Unnamed Organisation"
+    base_slug = generate_slug(org_name)
+    slug = base_slug
+    counter = 1
+    while True:
+        slug_check = await db.execute(
+            select(Organisation).where(Organisation.slug == slug)
+        )
+        if not slug_check.scalar_one_or_none():
+            break
+        slug = f"{base_slug}-{counter}"
+        counter += 1
+
+    new_org_id = str(uuid.uuid4())
+    await db.execute(
+        text(
+            "INSERT INTO organisations (id, name, slug, subscription_tier, subscription_status, settings, created_at, updated_at) "
+            "VALUES (:id, :name, :slug, 'essentials', 'trial', '{}', now(), now())"
+        ),
+        {"id": new_org_id, "name": org_name, "slug": slug},
+    )
+
+    # Insert organisation_members row (user owns this new org)
+    await db.execute(
+        text(
+            "INSERT INTO organisation_members (id, organisation_id, user_id, role, joined_at) "
+            "VALUES (:id, :org_id, :user_id, 'owner', now()) "
+            "ON CONFLICT (organisation_id, user_id) DO NOTHING"
+        ),
+        {"id": str(uuid.uuid4()), "org_id": new_org_id, "user_id": user_id},
+    )
+
+    # Set active_org_id (and legacy organisation_id on first connect only)
+    if is_first_connect:
+        await db.execute(
+            text(
+                "UPDATE users SET active_org_id = :org_id, organisation_id = :org_id "
+                "WHERE id = :user_id"
+            ),
+            {"org_id": new_org_id, "user_id": user_id},
+        )
+    else:
+        await db.execute(
+            text("UPDATE users SET active_org_id = :org_id WHERE id = :user_id"),
+            {"org_id": new_org_id, "user_id": user_id},
+        )
+
+    org_id = new_org_id
+    logger.info(
+        f"[XERO] Created org={org_id} (name={org_name}) for user={user_id} "
+        f"(first_connect={is_first_connect})"
+    )
+
+    # -----------------------------------------------------------------------
+    # Upsert xero_connections (one connection per org — each new org gets its own row)
+    # -----------------------------------------------------------------------
     connection_id = str(uuid.uuid4())
     await db.execute(
         text(
