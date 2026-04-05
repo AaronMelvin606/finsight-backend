@@ -179,14 +179,15 @@ async def budget_upload(
             await db.execute(
                 text("""
                     INSERT INTO budget_monthly
-                        (organisation_id, account_code, account_name, reporting_category, period, budget_amount, updated_at)
+                        (organisation_id, account_code, account_name, reporting_category, period, budget_amount, source, updated_at)
                     VALUES
-                        (:org_id, :account_code, :account_name, :reporting_category, :period, :budget_amount, now())
+                        (:org_id, :account_code, :account_name, :reporting_category, :period, :budget_amount, 'csv_upload', now())
                     ON CONFLICT (organisation_id, account_code, period)
                     DO UPDATE SET
                         account_name = EXCLUDED.account_name,
                         reporting_category = EXCLUDED.reporting_category,
                         budget_amount = EXCLUDED.budget_amount,
+                        source = EXCLUDED.source,
                         updated_at = now()
                 """),
                 {

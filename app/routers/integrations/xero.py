@@ -1312,17 +1312,18 @@ async def xero_sync_budgets(
                     text(
                         "INSERT INTO budget_monthly "
                         "  (id, organisation_id, account_code, account_name, "
-                        "   reporting_category, period, budget_amount, "
+                        "   reporting_category, period, budget_amount, source, "
                         "   created_at, updated_at) "
                         "VALUES "
                         "  (:id, :org_id, :account_code, :account_name, "
-                        "   :reporting_category, :period, :amount, "
+                        "   :reporting_category, :period, :amount, 'xero_sync', "
                         "   now(), now()) "
                         "ON CONFLICT (organisation_id, account_code, period) "
                         "DO UPDATE SET "
                         "  budget_amount = EXCLUDED.budget_amount, "
                         "  account_name = EXCLUDED.account_name, "
                         "  reporting_category = EXCLUDED.reporting_category, "
+                        "  source = EXCLUDED.source, "
                         "  updated_at = now()"
                     ),
                     {
