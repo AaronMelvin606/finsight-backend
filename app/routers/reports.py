@@ -28,6 +28,11 @@ from app.services.fiscal_year_service import (
     ensure_fiscal_months_current,
     get_last_closed_period_end_date,
 )
+from app.services.budget_service import (
+    get_budget_status,
+    get_budget_source,
+    fy_periods_for_range,
+)
 
 router = APIRouter()
 
@@ -51,6 +56,17 @@ async def _get_fy_start_month(db: AsyncSession, org_id: str) -> int:
     )
     row = result.scalar()
     return int(row) if row is not None else 4
+
+
+def _fy_bounds_for_period(period_start: date, fy_start_month: int) -> tuple:
+    """Return (fy_start, fy_end) for the FY containing period_start."""
+    if period_start.month >= fy_start_month:
+        fy_year = period_start.year
+    else:
+        fy_year = period_start.year - 1
+    fy_start = date(fy_year, fy_start_month, 1)
+    fy_end = date(fy_year + 1, fy_start_month, 1) - timedelta(days=1)
+    return fy_start, fy_end
 
 
 def _period_for_fy_month(fiscal_year: int, month_name: str, fy_start_month: int) -> str:
@@ -399,10 +415,18 @@ async def actual_vs_budget(
     )
     rows = result.mappings().all()
 
+    fy_start_month = await _get_fy_start_month(db, org_id)
+    fy_s, fy_e = _fy_bounds_for_period(period_start, fy_start_month)
+    fy_periods = fy_periods_for_range(fy_s, fy_e)
+    budget_status = await get_budget_status(db, org_id, fy_s, fy_e)
+    budget_source = await get_budget_source(db, org_id, fy_periods)
+
     return {
         "period_start": str(period_start),
         "period_end": str(period_end),
         "rows": [dict(r) for r in rows],
+        "budget_status": budget_status,
+        "budget_source": budget_source,
     }
 
 
@@ -629,6 +653,11 @@ async def avb_kpis(
         if revenue_actual_ytd != 0 else 0
     )
 
+    fy_s, fy_e = _fy_bounds_for_period(ps, fy_start_month)
+    fy_periods = fy_periods_for_range(fy_s, fy_e)
+    budget_status = await get_budget_status(db, org_id, fy_s, fy_e)
+    budget_source = await get_budget_source(db, org_id, fy_periods)
+
     return {
         "period_start": str(ps),
         "period_end": str(pe),
@@ -652,6 +681,8 @@ async def avb_kpis(
         "cost_ratio_budget": round(cost_ratio_budget, 2),
         "cash_position": round(cash_position, 2),
         "debtor_days": int(debtor_days),
+        "budget_status": budget_status,
+        "budget_source": budget_source,
     }
 
 
@@ -738,10 +769,18 @@ async def avb_bridge(
         {"name": "Actual EBITDA", "value": round(ebitda_actual, 2), "type": "total"},
     ]
 
+    fy_start_month = await _get_fy_start_month(db, org_id)
+    fy_s, fy_e = _fy_bounds_for_period(period_start, fy_start_month)
+    fy_periods = fy_periods_for_range(fy_s, fy_e)
+    budget_status = await get_budget_status(db, org_id, fy_s, fy_e)
+    budget_source = await get_budget_source(db, org_id, fy_periods)
+
     return {
         "period_start": str(period_start),
         "period_end": str(period_end),
         "bridge": bridge,
+        "budget_status": budget_status,
+        "budget_source": budget_source,
     }
 
 
@@ -822,10 +861,17 @@ async def avb_summary(
     )
     rows = result.mappings().all()
 
+    fy_s, fy_e = _fy_bounds_for_period(period_start, fy_start_month)
+    fy_periods = fy_periods_for_range(fy_s, fy_e)
+    budget_status = await get_budget_status(db, org_id, fy_s, fy_e)
+    budget_source = await get_budget_source(db, org_id, fy_periods)
+
     return {
         "period_start": str(period_start),
         "period_end": str(period_end),
         "summary": [dict(r) for r in rows],
+        "budget_status": budget_status,
+        "budget_source": budget_source,
     }
 
 
@@ -879,10 +925,17 @@ async def monthly_trend(
     )
     rows = result.mappings().all()
 
+    fy_s, fy_e = _fy_bounds_for_period(period_start, fy_start_month)
+    fy_periods = fy_periods_for_range(fy_s, fy_e)
+    budget_status = await get_budget_status(db, org_id, fy_s, fy_e)
+    budget_source = await get_budget_source(db, org_id, fy_periods)
+
     return {
         "period_start": str(period_start),
         "period_end": str(period_end),
         "trend": [dict(r) for r in rows],
+        "budget_status": budget_status,
+        "budget_source": budget_source,
     }
 
 
