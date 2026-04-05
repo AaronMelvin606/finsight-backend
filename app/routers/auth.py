@@ -56,34 +56,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _check_registration_allowed(email: str, db: AsyncSession) -> None:
-    """
-    Raise HTTP 403 if the email is not in the registration_allowlist table.
-
-    FinSight AI is invite-only during stealth — emails must be added to
-    the allowlist via POST /admin/allowlist before registration is permitted.
-    """
-    result = await db.execute(
-        text(
-            "SELECT email FROM registration_allowlist "
-            "WHERE LOWER(email) = LOWER(:email)"
-        ),
-        {"email": email.strip()},
-    )
-    if not result.fetchone():
-        logger.warning(
-            f"[REGISTER] Blocked unauthorised registration attempt for {email}"
-        )
-        sentry_sdk.capture_message(
-            f"Unauthorised registration attempt blocked: {email}",
-            level="warning",
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Registration not permitted.",
-        )
-
-
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/minute")
 async def register(
