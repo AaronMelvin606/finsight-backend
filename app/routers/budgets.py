@@ -10,10 +10,12 @@ CSV upload format:
     200,Sales,Revenue,2026,5,48000
 """
 
+from datetime import date, timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from pydantic import BaseModel, validator
 from typing import Optional
 import io
@@ -22,6 +24,7 @@ import csv
 from app.core.database import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
+from app.services.budget_service import fy_periods_for_range
 
 router = APIRouter()
 
@@ -315,3 +318,168 @@ async def delete_budget(
     if not row:
         raise HTTPException(status_code=404, detail="Budget entry not found")
     return {"message": "Budget entry deleted", "id": budget_id}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# HELPERS
+# ──────────────────────────────────────────────────────────────────────
+
+async def _get_fy_start_month(db: AsyncSession, org_id: str) -> int:
+    """Fetch fy_start_month from the organisations table for the given org."""
+    result = await db.execute(
+        text("SELECT fy_start_month FROM organisations WHERE id = :org_id"),
+        {"org_id": org_id},
+    )
+    row = result.scalar()
+    return int(row) if row is not None else 4
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GENERATE BUDGET FROM PRIOR YEAR ACTUALS
+# ──────────────────────────────────────────────────────────────────────
+
+@router.post("/budgets/generate-from-actuals", status_code=201)
+async def generate_from_actuals(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Auto-generate current FY budget from prior year actuals.
+
+    Reads financial_line_items for the prior FY (e.g. FY25 = 2025-04 to 2026-03),
+    maps each account+month to the current FY (e.g. FY26 = 2026-04 to 2027-03),
+    and writes to budget_monthly with source = 'auto_prior_year'.
+
+    Returns 409 if the current FY already has budget rows.
+    Returns 404 if no prior year actuals exist.
+    """
+    org_id = str(current_user.active_org_id)
+    if not org_id or org_id == "None":
+        raise HTTPException(status_code=403, detail="Organisation not set for user")
+
+    # Determine current and prior FY
+    fy_start_month = await _get_fy_start_month(db, org_id)
+    today = date.today()
+    if today.month >= fy_start_month:
+        current_fy_year = today.year
+    else:
+        current_fy_year = today.year - 1
+    prior_fy_year = current_fy_year - 1
+
+    # Current FY period range (e.g. 2026-04 to 2027-03)
+    current_fy_start = date(current_fy_year, fy_start_month, 1)
+    current_fy_end = date(current_fy_year + 1, fy_start_month, 1) - timedelta(days=1)
+    current_fy_periods = fy_periods_for_range(current_fy_start, current_fy_end)
+
+    # Prior FY period range (e.g. 2025-04 to 2026-03)
+    prior_fy_start = date(prior_fy_year, fy_start_month, 1)
+    prior_fy_end = date(prior_fy_year + 1, fy_start_month, 1) - timedelta(days=1)
+
+    # Guard: check if current FY already has budget rows
+    existing = await db.execute(
+        text("""
+            SELECT COUNT(*) FROM budget_monthly
+            WHERE organisation_id = :org_id
+              AND period IN :periods
+        """).bindparams(bindparam("periods", expanding=True)),
+        {"org_id": org_id, "periods": current_fy_periods},
+    )
+    if int(existing.scalar() or 0) > 0:
+        fy_label = f"FY{current_fy_year % 100}"
+        raise HTTPException(
+            status_code=409,
+            detail=f"{fy_label} budget already exists. Delete existing budget first or upload a replacement.",
+        )
+
+    # Query prior FY actuals grouped by account_code + month
+    actuals_result = await db.execute(
+        text("""
+            SELECT
+                am.account_code,
+                am.account_name,
+                am.reporting_category,
+                TO_CHAR(fli.period_start, 'YYYY-MM') AS period,
+                SUM(fli.net_amount) AS actual
+            FROM financial_line_items fli
+            JOIN account_mappings am
+                ON  am.organisation_id = fli.organisation_id
+                AND am.xero_account_id = fli.xero_account_id
+            WHERE fli.organisation_id = :org_id
+              AND fli.report_type = 'ProfitAndLoss'
+              AND fli.period_start >= :prior_start
+              AND fli.period_end <= :prior_end
+              AND am.statement_type = 'profit_and_loss'
+              AND am.include_in_pnl = TRUE
+            GROUP BY am.account_code, am.account_name,
+                     am.reporting_category, TO_CHAR(fli.period_start, 'YYYY-MM')
+        """),
+        {
+            "org_id": org_id,
+            "prior_start": prior_fy_start,
+            "prior_end": prior_fy_end,
+        },
+    )
+    rows = actuals_result.mappings().all()
+
+    if not rows:
+        fy_label = f"FY{prior_fy_year % 100}"
+        raise HTTPException(
+            status_code=404,
+            detail=f"No actuals found for {fy_label}. Connect Xero and sync data first.",
+        )
+
+    # Map prior FY periods to current FY (+1 year) and insert
+    rows_created = 0
+    months_seen: set = set()
+
+    for row in rows:
+        prior_period = row["period"]  # e.g. "2025-04"
+        months_seen.add(prior_period)
+
+        # Shift +1 year: "2025-04" -> "2026-04"
+        prior_year = int(prior_period[:4])
+        month_part = prior_period[5:]  # "04"
+        new_period = f"{prior_year + 1}-{month_part}"
+
+        await db.execute(
+            text("""
+                INSERT INTO budget_monthly
+                    (id, organisation_id, account_code, account_name,
+                     reporting_category, period, budget_amount, source,
+                     created_at, updated_at)
+                VALUES
+                    (gen_random_uuid(), :org_id, :account_code, :account_name,
+                     :reporting_category, :period, :amount, 'auto_prior_year',
+                     now(), now())
+                ON CONFLICT (organisation_id, account_code, period)
+                DO UPDATE SET
+                    budget_amount = EXCLUDED.budget_amount,
+                    account_name = EXCLUDED.account_name,
+                    reporting_category = EXCLUDED.reporting_category,
+                    source = EXCLUDED.source,
+                    updated_at = now()
+            """),
+            {
+                "org_id": org_id,
+                "account_code": row["account_code"],
+                "account_name": row["account_name"],
+                "reporting_category": row["reporting_category"],
+                "period": new_period,
+                "amount": float(row["actual"]),
+            },
+        )
+        rows_created += 1
+
+    await db.commit()
+
+    months_available = len(months_seen)
+    fy_label = f"FY{current_fy_year % 100}"
+
+    return {
+        "success": True,
+        "rows_created": rows_created,
+        "months_available": months_available,
+        "fy_label": fy_label,
+        "coverage": "full" if months_available >= 12 else "partial",
+        "source": "auto_prior_year",
+    }
