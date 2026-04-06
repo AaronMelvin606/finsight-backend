@@ -36,6 +36,9 @@ htmlcov/
 .env.*.local
 *.local
 
+# Heroku/buildpack files (not used — Cloud Run uses Dockerfile)
+Procfile
+
 # Railway files (deprecated)
 railway.toml
 railway.json
