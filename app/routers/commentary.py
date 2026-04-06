@@ -118,6 +118,8 @@ MODULE_PROMPTS = {
 class CommentaryRequest(BaseModel):
     module: str
     context: str
+    period_start: str | None = None
+    period_end: str | None = None
 
     @field_validator("module")
     @classmethod
@@ -156,8 +158,11 @@ async def generate_commentary(
     # --- Budget boundary check (AvB module only) ---
     if body.module == "actual_vs_budget" and current_user.active_org_id:
         fy_start_month = 4
-        today = date.today()
-        fy_year = today.year if today.month >= fy_start_month else today.year - 1
+        if body.period_start:
+            ref_date = date.fromisoformat(body.period_start)
+        else:
+            ref_date = date.today()
+        fy_year = ref_date.year if ref_date.month >= fy_start_month else ref_date.year - 1
         fy_s = date(fy_year, fy_start_month, 1)
         fy_e = date(fy_year + 1, fy_start_month, 1) - timedelta(days=1)
         budget_status = await get_budget_status(db, org_id, fy_s, fy_e)
