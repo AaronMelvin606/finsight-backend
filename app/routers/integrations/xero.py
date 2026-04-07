@@ -1152,6 +1152,17 @@ async def xero_disconnect(
     """
     org_id = _get_org_id(current_user)
 
+    # Always clear onboarding_complete so /auth/me reports xero_connected = false,
+    # even if xero_connections.is_active was already set to false by a prior attempt.
+    await db.execute(
+        text(
+            "UPDATE organisations "
+            "SET settings = jsonb_set(COALESCE(settings, '{}')::jsonb, '{onboarding_complete}', '\"false\"') "
+            "WHERE id = :org_id"
+        ),
+        {"org_id": org_id},
+    )
+
     # Get current connection
     result = await db.execute(
         text(
@@ -1163,7 +1174,9 @@ async def xero_disconnect(
     row = result.fetchone()
 
     if not row:
-        return {"success": True, "message": "No active Xero connection found"}
+        await db.commit()
+        logger.info(f"[XERO] Disconnected org={org_id} (no active connection, cleared onboarding flag)")
+        return {"success": True, "message": "Xero disconnected successfully"}
 
     # Attempt to revoke token (best effort)
     try:
@@ -1183,16 +1196,6 @@ async def xero_disconnect(
             "WHERE id = :id"
         ),
         {"id": str(row.id)}
-    )
-
-    # Clear onboarding_complete so /auth/me reports xero_connected = false
-    await db.execute(
-        text(
-            "UPDATE organisations "
-            "SET settings = jsonb_set(COALESCE(settings, '{}')::jsonb, '{onboarding_complete}', '\"false\"') "
-            "WHERE id = :org_id"
-        ),
-        {"org_id": org_id},
     )
 
     await db.commit()
