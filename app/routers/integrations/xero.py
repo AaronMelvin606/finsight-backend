@@ -784,6 +784,67 @@ async def xero_callback(
         )
 
     # -----------------------------------------------------------------------
+    # Check for existing INACTIVE connection to this tenant (re-connect flow)
+    # -----------------------------------------------------------------------
+    reconnect = await db.execute(
+        text(
+            "SELECT xc.id AS connection_id, xc.organisation_id "
+            "FROM xero_connections xc "
+            "JOIN organisation_members om ON om.organisation_id = xc.organisation_id "
+            "WHERE om.user_id = :user_id "
+            "  AND xc.xero_tenant_id = :tenant_id "
+            "  AND xc.is_active = false "
+            "LIMIT 1"
+        ),
+        {"user_id": user_id, "tenant_id": tenant_id},
+    )
+    reconnect_row = reconnect.fetchone()
+
+    if reconnect_row:
+        # Reactivate existing org + connection instead of creating a new one
+        org_id = str(reconnect_row.organisation_id)
+        await db.execute(
+            text(
+                "UPDATE xero_connections "
+                "SET access_token = :access_token, refresh_token = :refresh_token, "
+                "    token_expires_at = :expires_at, xero_tenant_name = :tenant_name, "
+                "    scopes = :scopes, connected_at = now(), is_active = true "
+                "WHERE id = :conn_id"
+            ),
+            {
+                "conn_id": str(reconnect_row.connection_id),
+                "access_token": encrypt_token(access_token),
+                "refresh_token": encrypt_token(refresh_token) if refresh_token else "",
+                "expires_at": token_expires_at,
+                "tenant_name": tenant_name,
+                "scopes": XERO_SCOPES,
+            },
+        )
+        # Restore onboarding_complete flag
+        await db.execute(
+            text(
+                "UPDATE organisations "
+                "SET settings = jsonb_set(COALESCE(settings, '{}')::jsonb, '{onboarding_complete}', '\"true\"') "
+                "WHERE id = :org_id"
+            ),
+            {"org_id": org_id},
+        )
+        # Set as active org
+        await db.execute(
+            text("UPDATE users SET active_org_id = :org_id WHERE id = :user_id"),
+            {"org_id": org_id, "user_id": user_id},
+        )
+        await db.commit()
+        logger.info(f"[XERO] Reconnected org={org_id} to tenant={tenant_name} ({tenant_id})")
+
+        try:
+            await run_onboarding(db, org_id)
+        except Exception as e:
+            logger.error(f"[XERO] Onboarding failed on reconnect for org={org_id}: {e}")
+
+        return RedirectResponse(url=f"{FRONTEND_URL}/?xero_connected=true")
+
+    # -----------------------------------------------------------------------
     # Check if user already has any orgs (determines first vs additional connect)
     # -----------------------------------------------------------------------
     existing_orgs = await db.execute(
