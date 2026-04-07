@@ -1184,6 +1184,17 @@ async def xero_disconnect(
         ),
         {"id": str(row.id)}
     )
+
+    # Clear onboarding_complete so /auth/me reports xero_connected = false
+    await db.execute(
+        text(
+            "UPDATE organisations "
+            "SET settings = jsonb_set(COALESCE(settings, '{}')::jsonb, '{onboarding_complete}', '\"false\"') "
+            "WHERE id = :org_id"
+        ),
+        {"org_id": org_id},
+    )
+
     await db.commit()
 
     logger.info(f"[XERO] Disconnected org={org_id}")
