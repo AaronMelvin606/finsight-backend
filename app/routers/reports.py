@@ -1101,7 +1101,7 @@ async def data_health(
             select_parts.append(f"{expiry_col} AS token_expiry")
 
         if not select_parts:
-            xero_query = "SELECT organisation_id FROM xero_connections WHERE organisation_id = :org_id LIMIT 1"
+            xero_query = "SELECT organisation_id FROM xero_connections WHERE organisation_id = :org_id AND is_active = true LIMIT 1"
             xero_result = await db.execute(text(xero_query), {"org_id": org_id})
             xero_row = xero_result.mappings().fetchone()
             if xero_row:
@@ -1111,7 +1111,7 @@ async def data_health(
             xero_query = f"""
                 SELECT {", ".join(select_parts)}
                 FROM xero_connections
-                WHERE organisation_id = :org_id
+                WHERE organisation_id = :org_id AND is_active = true
                 {order_clause}
                 LIMIT 1
             """
