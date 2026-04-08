@@ -1355,6 +1355,7 @@ async def get_fy_context_endpoint(
     """Return fiscal year context for the current organisation."""
     org_id = str(current_user.active_org_id)
     await ensure_fiscal_months_current(db, org_id)
+    await generate_fy_rows(db, org_id)
     return await get_fy_context(db, org_id)
 
 
