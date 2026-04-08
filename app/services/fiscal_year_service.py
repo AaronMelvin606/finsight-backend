@@ -59,10 +59,6 @@ async def ensure_fiscal_months_current(db: AsyncSession, org_id: str) -> int:
         logger.info(
             f"[FISCAL] Marked {updated} fiscal month(s) complete for org={org_id}"
         )
-
-    # Refresh is_current flag on fiscal_years in case FY has rolled over
-    await generate_fy_rows(db, org_id)
-
     return updated
 
 
