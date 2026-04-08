@@ -330,7 +330,7 @@ async def generate_fy_rows(db: AsyncSession, org_id: str, fy_start_month: int = 
                 {
                     "org_id": org_id,
                     "fy_year": fy_year,
-                    "month_period": month_date,
+                    "month_period": month_date.strftime("%Y-%m"),
                     "month_index": i + 1,
                     "is_completed": is_completed,
                 },
