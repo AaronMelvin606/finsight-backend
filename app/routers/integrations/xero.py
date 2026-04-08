@@ -845,6 +845,73 @@ async def xero_callback(
         return RedirectResponse(url=f"{FRONTEND_URL}/?xero_connected=true")
 
     # -----------------------------------------------------------------------
+    # Check for orphaned org: user has an org with NO xero_connections row
+    # (row was deleted rather than set is_active=false)
+    # -----------------------------------------------------------------------
+    orphan = await db.execute(
+        text(
+            "SELECT om.organisation_id "
+            "FROM organisation_members om "
+            "LEFT JOIN xero_connections xc ON xc.organisation_id = om.organisation_id "
+            "WHERE om.user_id = :user_id "
+            "  AND xc.id IS NULL "
+            "LIMIT 1"
+        ),
+        {"user_id": user_id},
+    )
+    orphan_row = orphan.fetchone()
+
+    if orphan_row:
+        # Reuse the orphaned org — insert a fresh xero_connections row
+        org_id = str(orphan_row.organisation_id)
+        connection_id = str(uuid.uuid4())
+        await db.execute(
+            text(
+                "INSERT INTO xero_connections "
+                "(id, organisation_id, xero_tenant_id, xero_tenant_name, "
+                " access_token, refresh_token, token_expires_at, scopes, "
+                " connected_at, is_active) "
+                "VALUES "
+                "(:id, :org_id, :tenant_id, :tenant_name, "
+                " :access_token, :refresh_token, :expires_at, :scopes, "
+                " now(), true)"
+            ),
+            {
+                "id": connection_id,
+                "org_id": org_id,
+                "tenant_id": tenant_id,
+                "tenant_name": tenant_name,
+                "access_token": encrypt_token(access_token),
+                "refresh_token": encrypt_token(refresh_token) if refresh_token else "",
+                "expires_at": token_expires_at,
+                "scopes": XERO_SCOPES,
+            },
+        )
+        # Restore onboarding_complete flag
+        await db.execute(
+            text(
+                "UPDATE organisations "
+                "SET settings = jsonb_set(COALESCE(settings, '{}')::jsonb, '{onboarding_complete}', '\"true\"') "
+                "WHERE id = :org_id"
+            ),
+            {"org_id": org_id},
+        )
+        # Set as active org
+        await db.execute(
+            text("UPDATE users SET active_org_id = :org_id WHERE id = :user_id"),
+            {"org_id": org_id, "user_id": user_id},
+        )
+        await db.commit()
+        logger.info(f"[XERO] Reconnected orphaned org={org_id} to tenant={tenant_name} ({tenant_id})")
+
+        try:
+            await run_onboarding(db, org_id)
+        except Exception as e:
+            logger.error(f"[XERO] Onboarding failed on orphan reconnect for org={org_id}: {e}")
+
+        return RedirectResponse(url=f"{FRONTEND_URL}/?xero_connected=true")
+
+    # -----------------------------------------------------------------------
     # Check if user already has any orgs (determines first vs additional connect)
     # -----------------------------------------------------------------------
     existing_orgs = await db.execute(
