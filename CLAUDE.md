@@ -248,3 +248,37 @@ Key files to read at the start of every session:
 - ../FinSight-AI-Vault/00-Context/ways-of-working.md — tool split, workflow patterns, Cursor interface definitions
 
 At the start of every build session, read both files before writing any code.
+
+---
+
+## Pre-commit checklist (mandatory — April 2026)
+
+### Security
+- [ ] No hardcoded secrets, tokens, or API keys
+- [ ] All SQL uses text() with parameterised values — no f-strings
+- [ ] All new endpoints have Depends(get_current_user) unless explicitly public
+
+### asyncpg type safety
+- [ ] VARCHAR → Python str (NEVER datetime.date)
+- [ ] BOOLEAN → Python bool
+- [ ] UUID → Python str
+- [ ] TIMESTAMPTZ → datetime with tzinfo or ISO str
+- [ ] All NOT NULL columns provided in every INSERT
+
+### Deployment
+- [ ] Deploy from ~/finsight-backend (not ~/) — Dockerfile not Buildpacks
+- [ ] Deploy to staging first, verify, then production
+- [ ] git diff reviewed verbatim before commit
+
+### Schema
+- [ ] Schema change? Write migration SQL + backfill for existing orgs
+- [ ] Update neon-schema.md in Obsidian vault
+
+### Git
+- [ ] Commit format: fix(scope): / feat(scope): / chore(scope):
+- [ ] No print() or logger.debug() with tokens, emails, or org IDs
+
+## Critical active risks (April 2026 review)
+- API keys: rotate any exposed or hardcoded keys immediately
+- SECRET_KEY: audit and replace weak or hardcoded values
+- Full findings: ~/Documents/FinSight GitHub repo/FinSight-AI-Vault/03-Reviews/codebase-review-april-2026.md
