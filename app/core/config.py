@@ -5,6 +5,7 @@ Environment-based configuration using Pydantic Settings.
 """
 
 from pydantic_settings import BaseSettings
+from pydantic import model_validator
 from typing import Optional
 from functools import lru_cache
 import sys
@@ -70,7 +71,19 @@ class Settings(BaseSettings):
 
     # Sentry (error monitoring)
     SENTRY_DSN: Optional[str] = None
-    
+
+    @model_validator(mode='after')
+    def validate_secret_key(self) -> 'Settings':
+        placeholder = "CHANGE-ME-set-SECRET_KEY-env-var"
+        if self.SECRET_KEY == placeholder and \
+                self.ENVIRONMENT in ("staging", "production"):
+            raise RuntimeError(
+                f"SECRET_KEY is using the placeholder default. "
+                f"Set the SECRET_KEY environment variable before "
+                f"deploying to {self.ENVIRONMENT}."
+            )
+        return self
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
