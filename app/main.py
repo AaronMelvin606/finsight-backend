@@ -25,6 +25,7 @@ from app.core.database import engine, Base
 from app.core.limiter import limiter
 from app.routers import auth, users, organisations, subscriptions, dashboards, demo, financial_data, mappings, budgets, reports, commentary, admin, settings as settings_router
 from app.routers.integrations import xero as xero_integration
+from app.routers.agents import variance_investigator as agents_vi
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +248,7 @@ app.include_router(reports.router, prefix="/api/v1", tags=["Reports"])
 app.include_router(settings_router.router, prefix="/api/v1", tags=["Settings"])
 app.include_router(commentary.router, prefix="/api/v1", tags=["Commentary"])
 app.include_router(admin.router, prefix="/api/v1", tags=["Admin"])
+app.include_router(agents_vi.router, prefix="/api/v1", tags=["Agents"])
 
 
 @app.get("/test-register", tags=["Debug"])
