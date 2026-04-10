@@ -311,12 +311,13 @@ async def generate_fy_rows(db: AsyncSession, org_id: str, fy_start_month: int = 
             },
         )
 
-    # Backfill any existing fiscal_year_months rows missing fy_label
+    # Backfill any existing fiscal_year_months rows missing fy_label or month_number
     await db.execute(
         text(
             "UPDATE fiscal_year_months "
-            "SET fy_label = 'FY' || LPAD((fy_year % 100)::text, 2, '0') "
-            "WHERE organisation_id = :org_id AND fy_label IS NULL"
+            "SET fy_label = COALESCE(fy_label, 'FY' || LPAD((fy_year % 100)::text, 2, '0')), "
+            "    month_number = COALESCE(month_number, month_index) "
+            "WHERE organisation_id = :org_id AND (fy_label IS NULL OR month_number IS NULL)"
         ),
         {"org_id": org_id},
     )
@@ -334,8 +335,8 @@ async def generate_fy_rows(db: AsyncSession, org_id: str, fy_start_month: int = 
             await db.execute(
                 text(
                     "INSERT INTO fiscal_year_months "
-                    "(organisation_id, fy_year, fy_label, month_period, month_index, is_completed) "
-                    "VALUES (:org_id, :fy_year, :fy_label, :month_period, :month_index, :is_completed) "
+                    "(organisation_id, fy_year, fy_label, month_period, month_number, month_index, is_completed) "
+                    "VALUES (:org_id, :fy_year, :fy_label, :month_period, :month_number, :month_index, :is_completed) "
                     "ON CONFLICT (organisation_id, month_period) DO NOTHING"
                 ),
                 {
@@ -343,6 +344,7 @@ async def generate_fy_rows(db: AsyncSession, org_id: str, fy_start_month: int = 
                     "fy_year": fy_year,
                     "fy_label": fy_label,
                     "month_period": month_date.strftime("%Y-%m"),
+                    "month_number": i + 1,
                     "month_index": i + 1,
                     "is_completed": is_completed,
                 },
