@@ -311,9 +311,20 @@ async def generate_fy_rows(db: AsyncSession, org_id: str, fy_start_month: int = 
             },
         )
 
+    # Backfill any existing fiscal_year_months rows missing fy_label
+    await db.execute(
+        text(
+            "UPDATE fiscal_year_months "
+            "SET fy_label = 'FY' || LPAD((fy_year % 100)::text, 2, '0') "
+            "WHERE organisation_id = :org_id AND fy_label IS NULL"
+        ),
+        {"org_id": org_id},
+    )
+
     # Insert fiscal_year_months rows
     first_of_current_month = today.replace(day=1)
     for fy_year in fy_years:
+        fy_label = f"FY{fy_year % 100:02d}"
         month = fy_start_month
         year = fy_year
         for i in range(12):
@@ -323,13 +334,14 @@ async def generate_fy_rows(db: AsyncSession, org_id: str, fy_start_month: int = 
             await db.execute(
                 text(
                     "INSERT INTO fiscal_year_months "
-                    "(organisation_id, fy_year, month_period, month_index, is_completed) "
-                    "VALUES (:org_id, :fy_year, :month_period, :month_index, :is_completed) "
+                    "(organisation_id, fy_year, fy_label, month_period, month_index, is_completed) "
+                    "VALUES (:org_id, :fy_year, :fy_label, :month_period, :month_index, :is_completed) "
                     "ON CONFLICT (organisation_id, month_period) DO NOTHING"
                 ),
                 {
                     "org_id": org_id,
                     "fy_year": fy_year,
+                    "fy_label": fy_label,
                     "month_period": month_date.strftime("%Y-%m"),
                     "month_index": i + 1,
                     "is_completed": is_completed,
