@@ -28,6 +28,7 @@ from app.core.encryption import encrypt_token, safe_decrypt
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.services.onboarding_service import run_onboarding
+from app.services.xero_service import get_valid_xero_credentials
 from app.services.auth_service import generate_slug
 from sqlalchemy import select
 from app.models.organisation import Organisation
@@ -100,97 +101,6 @@ def _get_org_id(current_user) -> str:
             detail="No active organisation. Please connect a Xero account to continue."
         )
     return str(org_id)
-
-
-# ---------------------------------------------------------------------------
-# Helper: refresh Xero tokens if expired
-# ---------------------------------------------------------------------------
-async def _refresh_tokens_if_needed(db: AsyncSession, org_id: str) -> dict:
-    """
-    Check if Xero access token is expired. If so, refresh it.
-    Returns dict with access_token and xero_tenant_id.
-    """
-    result = await db.execute(
-        text(
-            "SELECT id, access_token, refresh_token, token_expires_at, xero_tenant_id "
-            "FROM xero_connections "
-            "WHERE organisation_id = :org_id AND is_active = true"
-        ),
-        {"org_id": org_id}
-    )
-    row = result.fetchone()
-
-    if not row:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No active Xero connection found. Please connect Xero first."
-        )
-
-    now = datetime.now(timezone.utc)
-    # Refresh if within 5 minutes of expiry
-    if row.token_expires_at and row.token_expires_at > now + timedelta(minutes=5):
-        return {
-            "access_token": safe_decrypt(row.access_token),
-            "xero_tenant_id": row.xero_tenant_id,
-            "connection_id": str(row.id),
-        }
-
-    # Token expired or about to expire — refresh
-    logger.info(f"[XERO] Refreshing tokens for org={org_id}")
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            XERO_TOKEN_URL,
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": safe_decrypt(row.refresh_token),
-                "client_id": XERO_CLIENT_ID,
-                "client_secret": XERO_CLIENT_SECRET,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            timeout=15.0,
-        )
-
-    if resp.status_code != 200:
-        logger.error(f"[XERO] Token refresh failed: {resp.status_code} {resp.text}")
-        # Mark connection as inactive
-        await db.execute(
-            text("UPDATE xero_connections SET is_active = false WHERE id = :id"),
-            {"id": str(row.id)}
-        )
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Xero token refresh failed. Please reconnect Xero."
-        )
-
-    tokens = resp.json()
-    new_expires = now + timedelta(seconds=tokens.get("expires_in", 1800))
-
-    await db.execute(
-        text(
-            "UPDATE xero_connections "
-            "SET access_token = :access_token, "
-            "    refresh_token = :refresh_token, "
-            "    token_expires_at = :expires_at "
-            "WHERE id = :id"
-        ),
-        {
-            "access_token": encrypt_token(tokens["access_token"]),
-            "refresh_token": encrypt_token(
-                tokens.get("refresh_token") or safe_decrypt(row.refresh_token)
-            ),
-            "expires_at": new_expires,
-            "id": str(row.id),
-        }
-    )
-    await db.commit()
-
-    logger.info(f"[XERO] Tokens refreshed successfully for org={org_id}")
-    return {
-        "access_token": tokens["access_token"],
-        "xero_tenant_id": row.xero_tenant_id,
-        "connection_id": str(row.id),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -1079,7 +989,7 @@ async def xero_sync(
     """
     org_id = _get_org_id(current_user)
 
-    creds = await _refresh_tokens_if_needed(db, org_id)
+    creds = await get_valid_xero_credentials(db, org_id, XERO_CLIENT_ID, XERO_CLIENT_SECRET)
     access_token = creds["access_token"]
     tenant_id = creds["xero_tenant_id"]
 
@@ -1170,7 +1080,7 @@ async def xero_sync_range(
 
     org_id = _get_org_id(current_user)
 
-    creds = await _refresh_tokens_if_needed(db, org_id)
+    creds = await get_valid_xero_credentials(db, org_id, XERO_CLIENT_ID, XERO_CLIENT_SECRET)
     access_token = creds["access_token"]
     tenant_id = creds["xero_tenant_id"]
 
@@ -1348,7 +1258,7 @@ async def xero_sync_budgets(
     org_id = _get_org_id(current_user)
     logger.info(f"[BUDGET-SYNC] Starting for org={org_id}")
 
-    creds = await _refresh_tokens_if_needed(db, org_id)
+    creds = await get_valid_xero_credentials(db, org_id, XERO_CLIENT_ID, XERO_CLIENT_SECRET)
     access_token = creds["access_token"]
     tenant_id = creds["xero_tenant_id"]
 
