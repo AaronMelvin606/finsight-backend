@@ -72,7 +72,7 @@ class VarianceInvestigateResponse(BaseModel):
 )
 @limiter.limit("5/minute")
 async def variance_investigate(
-    http_request: Request,
+    request: Request,
     body: VarianceInvestigateRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
