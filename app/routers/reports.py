@@ -24,6 +24,7 @@ from app.models.user import User
 from app.services.fiscal_year_service import (
     get_current_fy,
     get_fy_context,
+    get_fy_start_month,
     generate_fy_rows,
     ensure_fiscal_months_current,
     get_last_closed_period_end_date,
@@ -46,16 +47,6 @@ _MONTH_NAME_TO_NUM = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
-
-
-async def _get_fy_start_month(db: AsyncSession, org_id: str) -> int:
-    """Fetch fy_start_month from the organisations table for the given org."""
-    result = await db.execute(
-        text("SELECT fy_start_month FROM organisations WHERE id = :org_id"),
-        {"org_id": org_id},
-    )
-    row = result.scalar()
-    return int(row) if row is not None else 4
 
 
 def _fy_bounds_for_period(period_start: date, fy_start_month: int) -> tuple:
@@ -104,7 +95,7 @@ async def budget_upload(
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 
     # Default fiscal year: use org's fy_start_month
-    fy_start_month = await _get_fy_start_month(db, org_id)
+    fy_start_month = await get_fy_start_month(db, org_id)
     today = date.today()
     if fiscal_year is None:
         fiscal_year = today.year if today.month >= fy_start_month else today.year - 1
@@ -416,7 +407,7 @@ async def actual_vs_budget(
     )
     rows = result.mappings().all()
 
-    fy_start_month = await _get_fy_start_month(db, org_id)
+    fy_start_month = await get_fy_start_month(db, org_id)
     fy_s, fy_e = _fy_bounds_for_period(period_start, fy_start_month)
     fy_periods = fy_periods_for_range(fy_s, fy_e)
     budget_status = await get_budget_status(db, org_id, fy_s, fy_e)
@@ -508,7 +499,7 @@ async def avb_kpis(
     if not org_id:
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 
-    fy_start_month = await _get_fy_start_month(db, org_id)
+    fy_start_month = await get_fy_start_month(db, org_id)
     ps = period_start if period_start is not None else _default_period_start(fy_start_month)
     pe = period_end if period_end is not None else await _resolve_default_period_end(db, org_id)
     if ps > pe:
@@ -770,7 +761,7 @@ async def avb_bridge(
         {"name": "Actual EBITDA", "value": round(ebitda_actual, 2), "type": "total"},
     ]
 
-    fy_start_month = await _get_fy_start_month(db, org_id)
+    fy_start_month = await get_fy_start_month(db, org_id)
     fy_s, fy_e = _fy_bounds_for_period(period_start, fy_start_month)
     fy_periods = fy_periods_for_range(fy_s, fy_e)
     budget_status = await get_budget_status(db, org_id, fy_s, fy_e)
@@ -798,7 +789,7 @@ async def avb_summary(
 ):
     """Summary by reporting category (REVENUE, COGS, OPEX)."""
     org_id = str(current_user.active_org_id)
-    fy_start_month = await _get_fy_start_month(db, org_id)
+    fy_start_month = await get_fy_start_month(db, org_id)
     ps = period_start if period_start is not None else _default_period_start(fy_start_month)
     pe = period_end if period_end is not None else await _resolve_default_period_end(db, org_id)
     if ps > pe:
@@ -889,7 +880,7 @@ async def monthly_trend(
 ):
     """Monthly trend data for trend chart."""
     org_id = str(current_user.active_org_id)
-    fy_start_month = await _get_fy_start_month(db, org_id)
+    fy_start_month = await get_fy_start_month(db, org_id)
     ps = period_start if period_start is not None else _default_period_start(fy_start_month)
     pe = period_end if period_end is not None else await _resolve_default_period_end(db, org_id)
     if ps > pe:
@@ -954,7 +945,7 @@ async def actuals(
 ):
     """Actuals by account for a given period."""
     org_id = str(current_user.active_org_id)
-    fy_start_month = await _get_fy_start_month(db, org_id)
+    fy_start_month = await get_fy_start_month(db, org_id)
     ps = period_start if period_start is not None else _default_period_start(fy_start_month)
     pe = period_end if period_end is not None else await _resolve_default_period_end(db, org_id)
     if ps > pe:
@@ -1343,7 +1334,7 @@ async def get_report_settings(
 ):
     """Return report settings for the current organisation."""
     org_id = str(current_user.active_org_id)
-    fy_start_month = await _get_fy_start_month(db, org_id)
+    fy_start_month = await get_fy_start_month(db, org_id)
     return {"fy_start_month": fy_start_month}
 
 
@@ -1354,7 +1345,7 @@ async def get_fy_context_endpoint(
 ):
     """Return fiscal year context for the current organisation."""
     org_id = str(current_user.active_org_id)
-    fy_start_month = await _get_fy_start_month(db, org_id)
+    fy_start_month = await get_fy_start_month(db, org_id)
     await ensure_fiscal_months_current(db, org_id)
     await generate_fy_rows(db, org_id, fy_start_month)
     return await get_fy_context(db, org_id)
@@ -1370,7 +1361,7 @@ async def get_available_fys(
     if not org_id or org_id == "None":
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 
-    fy_start_month = await _get_fy_start_month(db, org_id)
+    fy_start_month = await get_fy_start_month(db, org_id)
     fy_result = await db.execute(
         text(
             """

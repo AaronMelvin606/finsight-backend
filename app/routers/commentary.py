@@ -22,6 +22,7 @@ from app.core.database import get_db
 from app.models.organisation import Organisation
 from app.models.user import User
 from app.services.budget_service import get_budget_status
+from app.services.fiscal_year_service import get_fy_start_month
 
 logger = logging.getLogger(__name__)
 
@@ -150,16 +151,6 @@ MONTH_NAMES = [
 ]
 
 
-async def _get_fy_start_month(db: AsyncSession, org_id: str) -> int:
-    """Fetch fy_start_month from the organisations table for the given org."""
-    result = await db.execute(
-        text("SELECT fy_start_month FROM organisations WHERE id = :org_id"),
-        {"org_id": org_id},
-    )
-    row = result.scalar()
-    return int(row) if row is not None else 4
-
-
 @router.post("/commentary/generate", response_model=CommentaryResponse)
 async def generate_commentary(
     body: CommentaryRequest,
@@ -172,7 +163,7 @@ async def generate_commentary(
 
     # --- Budget boundary check (AvB module only) ---
     if body.module == "actual_vs_budget" and current_user.active_org_id:
-        fy_start_month = await _get_fy_start_month(db, org_id)
+        fy_start_month = await get_fy_start_month(db, org_id)
         if body.period_start:
             ref_date = date.fromisoformat(body.period_start)
         else:
@@ -232,7 +223,7 @@ async def generate_commentary(
     # --- Inject FY context ---
     if current_user.active_org_id:
         try:
-            fy_start_month = await _get_fy_start_month(db, org_id)
+            fy_start_month = await get_fy_start_month(db, org_id)
             fy_start_name = MONTH_NAMES[fy_start_month]
             fy_end_month = 12 if fy_start_month == 1 else fy_start_month - 1
             fy_end_name = MONTH_NAMES[fy_end_month]

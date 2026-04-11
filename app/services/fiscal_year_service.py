@@ -373,3 +373,13 @@ async def generate_fy_rows(db: AsyncSession, org_id: str, fy_start_month: int = 
     )
 
     await db.commit()
+
+
+async def get_fy_start_month(db: AsyncSession, org_id: str) -> int:
+    """Fetch fy_start_month from the organisations table for the given org."""
+    result = await db.execute(
+        text("SELECT fy_start_month FROM organisations WHERE id = :org_id"),
+        {"org_id": org_id},
+    )
+    row = result.scalar()
+    return int(row) if row is not None else 4

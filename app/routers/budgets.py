@@ -25,6 +25,7 @@ from app.core.database import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.services.budget_service import fy_periods_for_range
+from app.services.fiscal_year_service import get_fy_start_month
 
 router = APIRouter()
 
@@ -321,19 +322,6 @@ async def delete_budget(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# HELPERS
-# ──────────────────────────────────────────────────────────────────────
-
-async def _get_fy_start_month(db: AsyncSession, org_id: str) -> int:
-    """Fetch fy_start_month from the organisations table for the given org."""
-    result = await db.execute(
-        text("SELECT fy_start_month FROM organisations WHERE id = :org_id"),
-        {"org_id": org_id},
-    )
-    row = result.scalar()
-    return int(row) if row is not None else 4
-
-
 # ──────────────────────────────────────────────────────────────────────
 # GENERATE BUDGET FROM PRIOR YEAR ACTUALS
 # ──────────────────────────────────────────────────────────────────────
@@ -358,7 +346,7 @@ async def generate_from_actuals(
         raise HTTPException(status_code=403, detail="Organisation not set for user")
 
     # Determine current and prior FY
-    fy_start_month = await _get_fy_start_month(db, org_id)
+    fy_start_month = await get_fy_start_month(db, org_id)
     today = date.today()
     if today.month >= fy_start_month:
         current_fy_year = today.year
