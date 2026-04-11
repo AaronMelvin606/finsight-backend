@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from typing import Literal
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.user import User
 from app.api.deps import get_current_user
+from app.core.limiter import limiter
+from app.services.agent_service import orchestrate_variance_investigation
 
 router = APIRouter()
 
@@ -59,7 +61,7 @@ class VarianceInvestigateResponse(BaseModel):
     metadata: AgentMetadata
 
 
-# --- Endpoint (stub — service layer built in Week 2) ---
+# --- Endpoint ---
 
 
 @router.post(
@@ -68,8 +70,10 @@ class VarianceInvestigateResponse(BaseModel):
     summary="Investigate a variance in the AvB module",
     tags=["Agents"],
 )
+@limiter.limit("5/minute")
 async def variance_investigate(
-    request: VarianceInvestigateRequest,
+    http_request: Request,
+    body: VarianceInvestigateRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -78,9 +82,40 @@ async def variance_investigate(
     Fetches transaction-level data from Xero, analyses with Claude API,
     and returns structured findings with evidence.
 
-    This endpoint is a stub. Full implementation ships in Week 2.
+    Rate limited: 5 requests per minute per IP.
+    Typical latency: 5-15 seconds (Xero fetch + Claude API).
     """
-    raise HTTPException(
-        status_code=501,
-        detail="Variance Investigator not yet implemented. Ships Week 2.",
-    )
+    if not current_user.active_org_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active organisation. Please connect a Xero account to continue.",
+        )
+
+    org_id = str(current_user.active_org_id)
+    user_id = str(current_user.id)
+
+    try:
+        result = await orchestrate_variance_investigation(
+            db=db,
+            org_id=org_id,
+            user_id=user_id,
+            account_code=body.account_code,
+            account_name=body.account_name,
+            period_start=body.period_start,
+            period_end=body.period_end,
+            actual_amount=body.actual_amount,
+            budget_amount=body.budget_amount,
+            variance_amount=body.variance_amount,
+            variance_pct=body.variance_pct,
+        )
+        return result
+
+    except HTTPException:
+        # Re-raise HTTPExceptions from xero_service (404 no connection, 401 token refresh)
+        raise
+    except RuntimeError as exc:
+        # Service layer failures — translate to 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Investigation failed: {exc}",
+        ) from exc
