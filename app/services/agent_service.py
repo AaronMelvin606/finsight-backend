@@ -36,7 +36,7 @@ from app.services.xero_queries import (
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_MODEL = "claude-sonnet-4-6"
 XERO_CLIENT_ID = os.getenv("XERO_CLIENT_ID", "")
 XERO_CLIENT_SECRET = os.getenv("XERO_CLIENT_SECRET", "")
 
@@ -165,17 +165,17 @@ def _build_investigation_prompt(
     Returns (system_prompt, user_message).
     The system prompt instructs Claude to return pure JSON only.
     """
-    system_prompt = """You are a financial analyst AI embedded in a CFO reporting platform.
-Your task is to investigate an Actual vs Budget variance for a specific account.
-You will be given transaction-level data from Xero and budget figures for the period.
+    system_prompt = """You are a financial analyst AI embedded in a CFO reporting platform called FinSight AI.
+Your task is to investigate an Actual vs Budget variance for a specific account in Xero.
+You will be given transaction-level data from Xero and monthly budget figures for the period.
 
 You must respond with ONLY a valid JSON object. No preamble, no explanation, no markdown fences.
 The JSON must exactly match this schema:
 {
-  "summary": "One sentence headline explanation of the variance",
+  "summary": "One sentence headline explanation of the variance in plain English",
   "findings": [
     {
-      "description": "Specific finding with amounts and dates",
+      "description": "Specific finding with supplier/customer name, amounts and dates",
       "evidence": [
         {
           "type": "transaction",
@@ -184,23 +184,82 @@ The JSON must exactly match this schema:
           "date": "YYYY-MM-DD"
         }
       ],
-      "driver_type": "new_supplier | volume_change | timing | misclassification | price_change | other"
+      "driver_type": "new_supplier | volume_change | timing | misclassification | other"
     }
   ],
   "confidence": "high | medium | low",
   "suggested_actions": [
-    "Specific actionable recommendation"
+    "Specific actionable recommendation for a finance team"
   ]
 }
 
 Confidence rules:
 - high: clear transaction evidence directly explains >80% of the variance
 - medium: partial evidence, some interpretation required
-- low: sparse data, cannot reliably explain the variance
+- low: sparse data or fewer than 3 transactions, cannot reliably explain the variance
 
-Return at most 3 findings. Focus on material items only.
-All amounts in GBP. All dates in YYYY-MM-DD format.
-Findings must be grounded in the transaction data provided — do not speculate."""
+driver_type definitions:
+- new_supplier: spend with a supplier not seen in the prior period or budget
+- volume_change: same supplier/activity but higher or lower quantity or frequency
+- timing: transaction present but in wrong period (early or late)
+- misclassification: transaction likely coded to wrong account
+- other: does not fit the above categories
+
+Rules:
+- Return at most 3 findings. Focus on the most material items only.
+- All amounts in GBP. All dates in YYYY-MM-DD format.
+- Findings must be grounded in the transaction data provided — do not speculate.
+- The summary must be one sentence, written for a non-technical finance professional.
+- suggested_actions must be concrete and actionable, not generic advice.
+
+---
+
+WORKED EXAMPLE — follow this pattern exactly:
+
+Input:
+Account: 6100 — Marketing Expenses
+Period: 2025-10-01 to 2025-10-31
+Actual: £8,200.00 | Budget: £3,500.00 | Variance: £4,700.00 (+134.3%)
+
+Transactions:
+  - 2025-10-03 | Digitl Agency Ltd | INV-1042 | £4,200.00
+  - 2025-10-14 | Meta Ads | META-OCT-25 | £1,800.00
+  - 2025-10-21 | Digitl Agency Ltd | INV-1051 | £800.00
+  - 2025-10-28 | Canva Pro | CANVA-Q4 | £200.00
+
+Budget breakdown:
+  - Oct 2025: £3,500.00
+
+Expected output:
+{
+  "summary": "Marketing expenses exceeded budget by £4,700 primarily due to a new agency retainer with Digitl Agency Ltd not in the original budget.",
+  "findings": [
+    {
+      "description": "New supplier Digitl Agency Ltd billed £5,000 across two invoices in October (INV-1042 £4,200 on 3 Oct and INV-1051 £800 on 21 Oct). This supplier does not appear in prior period data or the budget.",
+      "evidence": [
+        {"type": "transaction", "ref": "Digitl Agency Ltd / INV-1042", "amount": 4200.00, "date": "2025-10-03"},
+        {"type": "transaction", "ref": "Digitl Agency Ltd / INV-1051", "amount": 800.00, "date": "2025-10-21"}
+      ],
+      "driver_type": "new_supplier"
+    },
+    {
+      "description": "Meta Ads spend of £1,800 is £800 above the implied budget allocation, suggesting higher paid social activity than planned.",
+      "evidence": [
+        {"type": "transaction", "ref": "Meta Ads / META-OCT-25", "amount": 1800.00, "date": "2025-10-14"}
+      ],
+      "driver_type": "volume_change"
+    }
+  ],
+  "confidence": "high",
+  "suggested_actions": [
+    "Confirm whether the Digitl Agency Ltd retainer was approved and update the budget to reflect ongoing spend.",
+    "Review the Meta Ads spend authorisation and adjust November budget if the higher level is expected to continue."
+  ]
+}
+
+---
+
+END OF EXAMPLE. Now investigate the variance in the user message and return JSON only."""
 
     transaction_lines = "\n".join([
         f"  - {t['date']} | {t['source_name']} | {t['reference']} | £{t['amount']:,.2f}"
@@ -257,9 +316,18 @@ async def _call_claude(
                 json={
                     "model": CLAUDE_MODEL,
                     "max_tokens": 1500,
-                    "system": system_prompt,
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": system_prompt,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
                     "messages": [{"role": "user", "content": user_message}],
                 },
+                # cache_control on system block enables Anthropic prompt caching.
+                # Cache requires >=1024 tokens in the system block (current prompt qualifies).
+                # TTL is 5 minutes — consecutive agent calls within that window read cache.
             )
     except httpx.TimeoutException as exc:
         raise RuntimeError(f"Claude API timed out after 60s: {exc}") from exc
