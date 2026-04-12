@@ -238,16 +238,59 @@ b75ad37 — feat(budget): set source column on Xero sync and CSV upload writes
 - **Duplicate org names in production:** two organisations both named "FinSight AI": **`2a291c1b-926e-4e2f-9dfa-5fc717960b4c`** (sandbox, **aaron@finsightai.tech**) and **`109ff319`** (**aaronmelvin123@gmail.com**). **`fiscal_year_months`** is only populated for the sandbox org. Multi-org cleanup needed.
 - **`next_to_complete`:** **`null`** on staging (no incomplete months in staging data) vs **`"2026-03"`** on production — data difference, not a bug.
 
-## Obsidian Vault
-Full project context and live session status live in the Obsidian vault at:
-../FinSight-AI-Vault/
+## Obsidian Vault — Context Layer
 
-Key files to read at the start of every session:
-- ../FinSight-AI-Vault/00-Context/project-master.md — permanent project context
-- ../FinSight-AI-Vault/02-Sessions/session-handoff.md — current workstream status, beta users, open items
-- ../FinSight-AI-Vault/00-Context/ways-of-working.md — tool split, workflow patterns, Cursor interface definitions
+The vault at `../FinSight-AI-Vault/` is the context layer for all Claude Code sessions. Read the relevant files before starting work.
 
-At the start of every build session, read both files before writing any code.
+### Session start checklist
+
+1. Read `../FinSight-AI-Vault/02-Sessions/session-handoff.md` — live status, current sprint, blockers
+2. Read `../FinSight-AI-Vault/00-Context/project-master.md` — permanent project facts
+3. `git pull origin main`
+4. Check current branch
+
+### Files relevant to backend work
+
+| File | Read when |
+|---|---|
+| `00-Context/neon-schema.md` | Any database work — tables, columns, migrations |
+| `00-Context/api-endpoints.md` | Adding or modifying endpoints |
+| `00-Context/infrastructure.md` | Deployment, Cloud Run, GCP config |
+| `00-Context/architecture-decisions.md` | Checking why a decision was made |
+| `01-Team/software-engineer.md` | Backend build sessions — forensic debugging protocol, deployment rules, technical constants |
+| `01-Team/chief-technology-officer.md` | Architecture decisions, code review, security |
+| `04-Specs/ws6-agent-module.md` | Agent module build — schema, API contract, file structure |
+| `04-Specs/ws4.5-beta-stabilisation.md` | Bug fixes, stabilisation priorities |
+| `03-Reviews/codebase-review-april-2026.md` | Security findings, code quality issues |
+
+### Sync discipline
+
+At the end of every build session where a permanently true fact changed:
+
+1. Check `../FinSight-AI-Vault/00-Context/sync-rules.md` for which files need updating
+2. Update the relevant vault files (neon-schema.md if new table, api-endpoints.md if new endpoint, etc.)
+3. If vault structure changed (new files), update this CLAUDE.md
+
+**Trigger prompt**: "Read ../FinSight-AI-Vault/00-Context/sync-rules.md. Based on the work completed in this session, identify which vault files need updating and update them now."
+
+### Forensic debugging protocol
+
+All code changes follow three mandatory phases before any push:
+
+1. **Pre-change**: Read actual code from disk (sed -n / grep) before modifying. Confirm root cause through evidence.
+2. **Post-change**: Re-read modified files from disk. Run manual verification against affected endpoint. Reconcile financial calculations against baseline (Revenue £41,696, COGS £1,950, OpEx £18,429, EBITDA £21,317). One commit per concern.
+3. **Pre-push**: Confirm branch, run build validation, verify staging end-to-end, check git diff. No hardcoded IDs or secrets.
+
+Output a self-review checklist at the end of every code task.
+
+### Handoff protocol
+
+When completing an API endpoint that the frontend will consume, provide:
+- Endpoint URL and method
+- Complete request schema (field names, types, required/optional)
+- Complete response schema (field names, types, nested structures)
+- Error response format (status codes, error body)
+- Example curl command from staging
 
 ---
 
