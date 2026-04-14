@@ -41,7 +41,6 @@ class VarianceFinding(BaseModel):
         "volume_change",
         "timing",
         "misclassification",
-        "price_change",
         "other",
     ]
 
