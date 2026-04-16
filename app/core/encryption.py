@@ -13,20 +13,14 @@ Migration strategy:
 
 import os
 
-from cryptography.fernet import Fernet, MultiFernet
+from cryptography.fernet import Fernet
 
 
-def get_fernet() -> MultiFernet:
-    primary = os.getenv("XERO_TOKEN_ENCRYPTION_KEY")
-    if not primary:
+def get_fernet() -> Fernet:
+    key = os.getenv("XERO_TOKEN_ENCRYPTION_KEY")
+    if not key:
         raise ValueError("XERO_TOKEN_ENCRYPTION_KEY env var not set")
-    keys = [Fernet(primary.encode() if isinstance(primary, str) else primary)]
-    secondary = os.getenv("XERO_TOKEN_ENCRYPTION_KEY_OLD")
-    if secondary:
-        keys.append(
-            Fernet(secondary.encode() if isinstance(secondary, str) else secondary)
-        )
-    return MultiFernet(keys)
+    return Fernet(key.encode() if isinstance(key, str) else key)
 
 
 def encrypt_token(token: str) -> str:
