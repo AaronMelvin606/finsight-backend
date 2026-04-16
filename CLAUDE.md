@@ -5,16 +5,16 @@ FastAPI backend for FinSight AI — a modular SaaS CFO platform. Deployed on Goo
 
 ## Infrastructure
 - Runtime: FastAPI on Google Cloud Run (us-central1)
-- Production revision: finsight-backend-00156-wrh (deployed 5 Apr 2026)
-- Staging revision: finsight-backend-staging-00006-chg (deployed 30 Mar 2026)
-- Previous production revision: finsight-backend-00140-gfd (deployed 30 Mar 2026)
-- Database: Neon PostgreSQL (10 tables)
+- Production revision: finsight-backend-00207-bnq (deployed 16 Apr 2026)
+- Previous production revision: finsight-backend-00206-qbh (deployed 16 Apr 2026)
+- Staging revision: finsight-backend-staging-00038-q9f (deployed 16 Apr 2026)
+- Database: Neon PostgreSQL (11 tables — agent_requests + agent_responses added 11 Apr 2026)
 - Custom domain: api.finsightai.tech → finsight-backend-520129376224.us-central1.run.app
 - Monitoring: Sentry (backend DSN), GCP Monitoring alerts
 - Analytics: PostHog (eu.posthog.com)
 
 ## Neon tables
-users, organisations, xero_connections, account_mappings, budget_monthly, fiscal_years, fiscal_year_months, financial_line_items, registration_allowlist, organisation_members
+users, organisations, xero_connections, account_mappings, budget_monthly, fiscal_years, fiscal_year_months, financial_line_items, registration_allowlist, organisation_members, agent_requests, agent_responses
 
 ## Sandbox constants
 - Org ID: 2a291c1b-926e-4e2f-9dfa-5fc717960b4c
@@ -47,8 +47,33 @@ Revenue £36,284 − COGS £1,950 = GP £34,334; GP − OpEx £17,622 = EBITDA �
 - At the start of every session: git pull origin main before writing any code.
 
 ## Security
+
+### GCP Secret Manager — current state (16 Apr 2026)
+All secrets except XERO_CLIENT_ID are now in Secret Manager:
+
+| Secret | Status |
+|---|---|
+| SECRET_KEY | ✅ Secret Manager |
+| BASE_URL | ✅ Secret Manager |
+| ANTHROPIC_API_KEY | ✅ Secret Manager |
+| DATABASE_URL | ✅ Secret Manager |
+| XERO_CLIENT_SECRET | ✅ Secret Manager |
+| ADMIN_TOKEN | ✅ Secret Manager |
+| RESEND_API_KEY | ✅ Secret Manager |
+| XERO_TOKEN_ENCRYPTION_KEY | ✅ Secret Manager (xero-token-encryption-key:2) — F3b complete 16 Apr 2026 |
+| XERO_CLIENT_ID | ⚠️ Still plaintext — lower priority |
+
+### Secret Manager v1 — scheduled destroy 23–30 Apr 2026
+F3b complete. v1 disabled 16 Apr 2026. All xero_connections rows re-encrypted to v2. Zero plaintext tokens remain in production.
+Destroy command when ready (after 7–14 day soak):
+```bash
+gcloud secrets versions destroy 1 --secret=xero-token-encryption-key --project gen-lang-client-0798522650
+```
+
+### Security tiers
+- Tier 1 complete: all critical secrets in GCP Secret Manager (F1–F2, F4–F8 + C1: 9 Apr 2026 · F3 delivery swap: 14 Apr 2026 · F3b real rotation: 16 Apr 2026)
 - Tier 2 complete: GCP Monitoring 401 spike alerts, slowapi rate limiting on /auth/register and /auth/login
-- Tier 3 pending (post first customer): audit_log table, failed login lockout
+- Tier 3 pending (post first customer): audit_log table, failed login lockout, split Cloud Run service accounts per environment
 - Rate limiting: app/core/limiter.py
 
 ## Key commits (for reference)
@@ -83,6 +108,10 @@ verification against api.finsightai.tech and api-staging.finsightai.tech.
 Direct Cloud Run URL always works regardless of network:
 finsight-backend-staging-520129376224.us-central1.run.app
 
+### Staging traffic routing — FIXED 16 Apr 2026
+Staging was pinned to named revision `finsight-backend-staging-00034-8lq` (discovered 14 Apr 2026). Fixed during F3b Step 5 via `--to-latest`. Staging now uses `latestRevision: true` — new revisions auto-promote correctly.
+Current staging revision: `finsight-backend-staging-00038-q9f`
+
 ### Deployment flow
 Normal:  feature branch → staging → verify → merge to main → production
 Hotfix:  hotfix branch → main → verify in production → merge back to staging
@@ -92,6 +121,23 @@ Run in finsight-backend:
   git checkout staging && git merge main && git push origin staging && git checkout main
 Run in FinSight-AI---Professional-Growth-Suite:
   git checkout staging && git merge main && git push origin staging && git checkout main
+
+### gcloud describe safety rule (added 14 Apr 2026)
+Before running `--format=json` on any Cloud Run service spec, filter out env var values to avoid printing secrets to transcript:
+
+```bash
+gcloud run services describe SERVICE --format=json | jq 'del(.. | .value?)'
+```
+
+Never dump raw Cloud Run JSON without this filter when plaintext env vars may exist.
+
+### gcloud secrets flag — important distinction (added 16 Apr 2026)
+`--remove-env-vars` only removes plain env vars. It does NOT remove secret-mounted vars set via `--update-secrets`.
+To remove a secret-mounted env var, use `--remove-secrets`:
+```bash
+gcloud run services update SERVICE --remove-secrets ENV_VAR_NAME
+```
+Using the wrong flag silently no-ops — no warning is printed.
 
 ---
 
@@ -184,6 +230,31 @@ Run in FinSight-AI---Professional-Growth-Suite:
 - Required so new users connect and see all past periods already closed
   without needing manual intervention
 
+## Agent module — WS6 (live 11–16 Apr 2026)
+
+### New tables
+- agent_requests — id, organisation_id, user_id, agent_type, input_params, status, created_at, completed_at
+- agent_responses — id, request_id, response_json, confidence, tokens_used, latency_ms, created_at
+
+### New files
+- app/routers/agents/variance_investigator.py — POST /api/v1/agents/variance-investigator/investigate. Rate limited 5/min. Auth required.
+- app/services/agent_service.py — full orchestration: pending → Xero fetch → Claude API → response → complete/failed. Model: claude-sonnet-4-6. Prompt caching enabled (cache_control: ephemeral on system block).
+- app/services/xero_queries.py — get_transactions_for_account(), get_budget_for_account(). Pure httpx.
+- app/services/xero_service.py — shared credential layer. get_valid_xero_credentials().
+
+### driver_type canonical enum
+`new_supplier | volume_change | timing | misclassification | other`
+price_change was removed in commit 1784ac3 (ADR-010). Do NOT re-introduce it anywhere.
+
+### Agent session commit trail
+- 015bb74: router stub (501)
+- 980bc86: xero_service.py
+- db9e52c: xero_queries.py
+- 1b688e8: agent_service.py orchestration
+- 5b71a5c + 1bf503e: router wired, rate limited, deployed
+- 1784ac3: prompt engineering — model pin, few-shot, driver_type definitions, prompt caching
+- a02a32a: removed price_change from driver_type Literal (ADR-010)
+
 ## Session commit trail — 28 Mar 2026
 
 563adbd — fix: YYYY-MM date format crash in fy-context
@@ -213,6 +284,24 @@ f1bb211 — merge: feat/fy-selector into staging — FY rollover backend fixes
 0d09e39 — feat: extend Xero OAuth callback to support multi-org connect
 57d72ef — feat: GET /auth/my-orgs and POST /auth/switch-org endpoints
 6702c4e — feat: resolve active org from active_org_id across all endpoints
+
+## Session commit trail — 11–14 Apr 2026
+
+9042101 — fix: commentary hardcodes fy_start_month=4 — dynamic FY context
+0c972ec — refactor: extract _get_fy_start_month() — 13 call sites
+0ffd7e1 — feat(analytics): PostHog cleanup — sandbox filter structural, pnl_module_viewed
+ffb416f — feat(marketing): useScrollDepthSections — per-section PostHog events
+980bc86 — feat(agents): xero_service.py shared credential layer
+db9e52c — feat(agents): xero_queries.py Xero data fetching library
+1b688e8 — feat(agents): agent_service.py full orchestration layer
+5b71a5c + 1bf503e — feat(agents): variance_investigator router wired, rate limited, deployed
+1784ac3 — feat(agents): prompt engineering — model pin claude-sonnet-4-6, few-shot, caching
+a02a32a — fix(agents): remove price_change from driver_type Literal (ADR-010)
+
+## Session commit trail — 16 Apr 2026
+
+81ea950 — feat(security): MultiFernet rotation for XERO_TOKEN_ENCRYPTION_KEY (F3b step 1 of 2)
+a3514f2 — feat(security): revert to single Fernet after v2 re-encryption complete (F3b step 2 of 2)
 
 ## Budget boundary detection (5 Apr 2026)
 
@@ -312,6 +401,8 @@ When completing an API endpoint that the frontend will consume, provide:
 - [ ] Deploy from ~/finsight-backend (not ~/) — Dockerfile not Buildpacks
 - [ ] Deploy to staging first, verify, then production
 - [ ] git diff reviewed verbatim before commit
+- [ ] Before `gcloud run services describe --format=json`: pipe through `jq 'del(.. | .value?)'` to avoid printing plaintext secrets to transcript
+- [ ] To remove secret-mounted env vars use `--remove-secrets`, NOT `--remove-env-vars`
 
 ### Schema
 - [ ] Schema change? Write migration SQL + backfill for existing orgs
@@ -321,7 +412,10 @@ When completing an API endpoint that the frontend will consume, provide:
 - [ ] Commit format: fix(scope): / feat(scope): / chore(scope):
 - [ ] No print() or logger.debug() with tokens, emails, or org IDs
 
-## Critical active risks (April 2026 review)
+## Critical active risks (April 2026)
+
+- **Secret Manager v1 destroy pending:** v1 disabled 16 Apr 2026. Destroy after 23–30 Apr soak: `gcloud secrets versions destroy 1 --secret=xero-token-encryption-key --project gen-lang-client-0798522650`
+- **Shared Cloud Run service accounts:** prod + staging both use `520129376224-compute@developer.gserviceaccount.com`. Least-privilege violation — fix before first paying customer.
 - API keys: rotate any exposed or hardcoded keys immediately
 - SECRET_KEY: audit and replace weak or hardcoded values
 - Full findings: ~/Documents/FinSight GitHub repo/FinSight-AI-Vault/03-Reviews/codebase-review-april-2026.md
